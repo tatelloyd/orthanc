@@ -16,6 +16,7 @@ classifies them, and displays them to the screen.
 -(Optional) Laser pointer toggle
 
 **Bill of Materials**
+
 -RaspberryPi 4: https://vilros.com/products/raspberry-pi-4-model-b-1?variant=40809478750302&country=US&currency=USD&utm_medium=product_sync&utm_source=google&utm_content=sag_organic&utm_campaign=sag_organic&tw_source=google&tw_adid=&tw_campaign=19684058556&gad_source=4&gad_campaignid=19684058613&gbraid=0AAAAAD1QJAjEBBM33-wmkODVKD7MW20ge&gclid=Cj0KCQjw5onGBhDeARIsAFK6QJYBMe_ULjNbXKXG4-nAZ0vRzUujs97eeRkRN07h2lzJH7UucQjYrW0aAqtJEALw_wcB
 
 -RaspberryPi 4 charger: https://www.newark.com/raspberry-pi/sc0218/rpi-power-supply-usb-c-5-1v-3a/dp/03AH7034?CMP=KNC-GUSA-PMAX-SHOPPING-ONBOARD-COMP-NEW&mckv=_dc|pcrid||plid||kword||match||slid||product|03AH7034|pgrid||ptaid||&gad_source=1&gad_campaignid=22957739450&gbraid=0AAAAAD5U_g3noAyNJXRbrbLDB7WvxXL9c&gclid=Cj0KCQjw5onGBhDeARIsAFK6QJZuPxSgGmA-fchVQFMMbaFAxiFpXCWWFYP2dVo4Yf00-OqNIMlm94UaAhiNEALw_wcB
@@ -49,3 +50,4 @@ The overarching setup is there is a main class, SimpleTurret, that has sub class
 -SimpleServo: Servos controller
 -SimpleLaser: Laser toggle
 -SimpleDetector: Computer vision functionality
+
