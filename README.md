@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Orthanc - Autonomous Turret Tracking System
 
 ## Overview
@@ -225,6 +224,7 @@ This robot can move with pan/tilt functionality via motion controllers in C++.
 Plg the pan and tilt servos into pins 11 (GPIO 17) 13(GPIO 27) respectively.
 
 The stand itself can be put together via this helper video: https://www.youtube.com/watch?v=HUTcWrGf2Hk
+
 
 
 >>>>>>> 3e64848276017836244cf8cc2de0b73bc0eab069
