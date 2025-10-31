@@ -71,21 +71,20 @@ sudo systemctl status pigpiod
 ### Installation
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/orthanc.git
+git clone https://github.com/tatelloyd/orthanc.git
 cd orthanc
 
 # Compile the project
-g++ -o turret main.cpp Turret.cpp ServoController.cpp SignalGenerator.cpp \
-    -lpigpiod_if2 -std=c++17
+g++ -o orthanc tower.cpp ServoController.cpp SignalGenerator.cpp \
+    -lpigpiod_if2 -std=c++20
 
 # Run test program
-./turret
+./orthanc
 ```
 
 ## Project Structure
 ```
 orthanc/
-├── main.cpp              # Main control loop with test patterns
 ├── Tower.cpp          # High-level turret control (in development)
 ├── ServoController.h/cpp # Low-level servo interface ✅
 ├── SignalGenerator.h/cpp # Test pattern generation ✅
@@ -122,7 +121,7 @@ orthanc/
 
 ### Current Test Mode
 ```bash
-./turret
+./orthanc
 # Executes signal generator test patterns on pan/tilt servos
 # Press Ctrl+C to stop and center servos
 ```
