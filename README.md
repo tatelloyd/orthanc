@@ -75,7 +75,7 @@ git clone https://github.com/tatelloyd/orthanc.git
 cd orthanc
 
 # Compile the project
-g++ -o orthanc tower.cpp ServoController.cpp SignalGenerator.cpp \
+g++ -o orthanc main.cpp Turret.cpp ServoController.cpp SignalGenerator.cpp \
     -lpigpiod_if2 -std=c++20
 
 # Run test program
@@ -85,7 +85,8 @@ g++ -o orthanc tower.cpp ServoController.cpp SignalGenerator.cpp \
 ## Project Structure
 ```
 orthanc/
-├── Tower.cpp          # High-level turret control (in development)
+├── main.cpp              # Main control loop  
+├── Turret.h/cpp          # High-level turret control (in development)
 ├── ServoController.h/cpp # Low-level servo interface ✅
 ├── SignalGenerator.h/cpp # Test pattern generation ✅
 └── README.md

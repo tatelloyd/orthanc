@@ -8,6 +8,7 @@
 #include <pigpiod_if2.h>
 
 // Header Files
+#include "Turret.hpp"
 #include "SignalGenerator.hpp"
 #include "ServoController.hpp"
 
@@ -22,14 +23,6 @@ void signal_handler(int signum) {
 int main(){ 
      //Use std::chrono to reduce complexity
     using namespace std::chrono;
-
-    // Connect to pigpio daemon
-    int pi = pigpio_start(NULL, NULL);
-    if (pi < 0) {
-        std::cerr << "Failed to connect to pigpio daemon" << std::endl;
-        return 1;
-    }
-    std::cout << "Connected to daemon" << std::endl;
     
     struct sigaction sa;
     sa.sa_handler = signal_handler; // Set the handler function
@@ -48,9 +41,10 @@ int main(){
     auto start_time = steady_clock::now();
     const double simulation_time = 15.0;
 
-    ServoController panController(17, pi);
-    ServoController tiltController(27, pi, 750, 2500, 1000);
+    // Make turret object
+    Turret orthanc(17, 27);
 
+    // Make the test signals
     SignalGenerator sig1(700, 6.0, 1500);
     SignalGenerator sig2(700, 3.0, 1500);
 
@@ -71,26 +65,22 @@ int main(){
         double sine_value = sig1.sine(elapsed_time);
         double square_value = sig2.triangle(elapsed_time);
         
-        // Send to servo (clamp to valid PWM range)
-        panController.setPulseWidth(sine_value);
-        tiltController.setPulseWidth(square_value);
+        // Send to tower, which will clamp to valid PWM range via
+        // The servo controllers
+        orthanc.setPanPulseWidth(sine_value);
+        orthanc.setTiltPulseWidth(square_value);
         
         // Optional: Log for debugging
         if (static_cast<int>(elapsed_time*10000 ) % 10000 == 0){  // Every second
-            std::cout << "t=" << elapsed_time << "s, pan angle=" << panController.getCurrentAngle() << 
-            "°, tilt angle=" << tiltController.getCurrentAngle() << "°" << std::endl;
+            std::cout << "t=" << elapsed_time << "s, pan angle=" << orthanc.getPanAngle() << 
+            "°, tilt angle=" << orthanc.getTiltAngle() << "°" << std::endl;
         }
 
         // Sleep to maintain loop rate
         std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(dt)*1000));
     }
 
-    // Reset servo to center
-    panController.center();
-    tiltController.center();
-    pigpio_stop(pi);
-
     return 0;
 }
 
-// Compile: g++ -o orthanc tower.cpp ServoController.cpp SignalGenerator.cpp -lpigpiod_if2 -std=c++20
+// Compile: g++ -o orthanc main.cpp Turret.cpp ServoController.cpp SignalGenerator.cpp -lpigpiod_if2 -std=c++20
