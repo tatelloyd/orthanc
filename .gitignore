@@ -30,3 +30,7 @@ __pycache__/
 # YOLO cache
 *.pt
 runs/
+
+# Test Directories
+camera_test_output
+yolo_test_output
