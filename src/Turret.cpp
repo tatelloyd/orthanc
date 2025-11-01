@@ -6,7 +6,7 @@
 #include "Turret.hpp"
 
 Turret::Turret(int pan_pin, int tilt_pin)
-    : pi(pigpio_start(NULL, NULL)),
+    : pi(pigpio_start(nullptr, nullptr)),
       pan(pan_pin, pi),
       tilt(tilt_pin, pi)
 {

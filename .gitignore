@@ -1,0 +1,32 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# YOLO model cache
+*.pt
+runs/
+.ultralytics/
+
+# Build artifacts
+*.o
+orthanc
+test_servo
+
+# IDE
+.vscode/
+.idea/# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# YOLO cache
+*.pt
+runs/

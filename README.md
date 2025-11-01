@@ -1,16 +1,18 @@
 # Orthanc - Autonomous Turret Tracking System
 
 ## Overview
-Orthanc is an autonomous target tracking system in development, featuring pan/tilt servo control with plans for AI-powered object detection and laser designation. Currently implementing the foundational servo control architecture in C++.
+Orthanc is an autonomous target tracking system in development, featuring pan/tilt servo control with AI-powered object detection and laser designation capabilities. The system combines real-time C++ servo control with Python-based YOLOv8 computer vision.
 
 **Current Features:**
 - ✅ Modular ServoController class for precise servo management
 - ✅ Signal generator for testing and motion profiling
 - ✅ Clean C++ architecture with proper resource management
 - ✅ pigpiod daemon integration for reliable GPIO control
+- ✅ YOLOv8 object detection pipeline (testing phase)
+- ✅ Headless operation support for SSH development
 
 **Planned Features:**
-- 🔄 YOLOv8 object detection integration
+- 🔄 Real-time target tracking integration (C++ ↔ Python IPC)
 - 🔄 Kalman filter for predictive tracking
 - 🔄 Laser pointer for target designation
 - 🔄 Multi-turret coordination (ROS2)
@@ -23,12 +25,13 @@ Orthanc is an autonomous target tracking system in development, featuring pan/ti
 | USB-C Power Supply (5.1V, 3A) | [Newark](https://www.newark.com/raspberry-pi/sc0218/rpi-power-supply-usb-c-5-1v-3a/dp/03AH7034) | Official RPi charger |
 | MicroSD Card (32GB+) | [SanDisk Ultra](https://shop.sandisk.com/products/memory-cards/microsd-cards/sandisk-ultra-uhs-i-microsd) | For Raspberry Pi OS |
 | Pan/Tilt Camera Mount | [SparkFun](https://www.sparkfun.com/pan-tilt-bracket-kit-single-attachment.html) | Includes 2x SG90 servos |
+| OV5647 Camera Module | [Seeed Studio](https://www.digikey.com/en/products/detail/seeed-technology-co-ltd/402990004/5488098) | For YOLOv8 detection |
 | Jumper Wires | Female-to-female | For servo connections |
 | GPIO Breakout Board (optional) | [Treedix](https://www.treedixofficial.com/products/treedix-rpi-gpio-terminal-block-breakout-board-module-expansion-board-compatible-with-raspberry-pi-4b-3b-3b-2b-zero-zero-w) | Easier wiring |
 
 **Future additions:**
-- USB Webcam (for YOLOv8 integration)
 - Laser pointer module (for target designation)
+- External 5V power supply (for multi-servo scaling)
 
 ## Hardware Setup
 
@@ -39,6 +42,7 @@ Raspberry Pi GPIO Connections:
 - Tilt Servo → GPIO 27 (Physical Pin 13)
 - Ground     → GND (Physical Pin 6, 9, 14, etc.)
 - 5V Power   → 5V (Physical Pin 2 or 4)
+- Camera     → USB Port
 ```
 
 ### Assembly
@@ -46,6 +50,7 @@ Raspberry Pi GPIO Connections:
 2. Mount servos to bracket (included in kit)
 3. Connect servo signal wires to GPIO pins as shown above
 4. Connect servo power (red) to 5V, ground (brown/black) to GND
+5. Connect camera module to Raspberry Pi CSI port
 
 **⚠️ Servo Power Note:** For 2 servos, the Pi's 5V rail is usually sufficient for testing. For production or adding more servos, use an external 5V power supply with common ground.
 
@@ -54,42 +59,122 @@ Raspberry Pi GPIO Connections:
 ### Prerequisites
 ```bash
 # Update system
-sudo apt-get update
-sudo apt-get upgrade
+sudo apt-get update && sudo apt-get upgrade -y
 
 # Install pigpio daemon (required for servo control)
-sudo apt-get install pigpio python3-pigpio
+sudo apt-get install pigpio python3-pigpio -y
 
-# Enable and start pigpiod
+# Enable camera interface
+sudo raspi-config
+# Navigate to: Interface Options → Camera → Enable
+# Reboot after enabling
+```
+
+### Enable pigpiod Service (Recommended)
+Create systemd service for automatic startup:
+
+```bash
+sudo nano /etc/systemd/system/pigpiod.service
+```
+
+Paste the following configuration:
+```ini
+[Unit]
+Description=pigpio daemon
+
+[Service]
+ExecStart=/usr/bin/pigpiod
+ExecStop=/usr/bin/killall pigpiod
+Type=forking
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+```bash
+sudo systemctl daemon-reload
 sudo systemctl enable pigpiod
 sudo systemctl start pigpiod
+```
 
-# Verify daemon is running
+Verify the daemon is running:
+```bash
 sudo systemctl status pigpiod
 ```
 
-### Installation
+### Project Installation
 ```bash
 # Clone repository
 git clone https://github.com/tatelloyd/orthanc.git
 cd orthanc
 
-# Compile the project
+# Set up Python virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Compile C++ code
+cd src
 g++ -o orthanc main.cpp Turret.cpp ServoController.cpp SignalGenerator.cpp \
     -lpigpiod_if2 -std=c++20
-
-# Run test program
-./orthanc
 ```
 
-## Project Structure
+### Testing
+
+**Test 1: Servo Control**
+```bash
+cd src
+./orthanc
+# Expected: Servos execute test motion patterns
+# Press Ctrl+C to stop and center servos
+```
+
+**Test 2: Camera (Headless)**
+```bash
+source venv/bin/activate
+cd tests
+python test_camera_headless.py
+# Expected: Creates camera_test_output/ with test images and video
+```
+
+**Test 3: YOLOv8 Detection (Headless)**
+```bash
+python test_yolo_headless.py
+# Expected: Creates yolo_test_output/ with annotated detection images
+# First run will download YOLOv8n model (~6MB)
+```
+
+**Note:** Headless tests save images instead of displaying (works over SSH). To view results:
+```bash
+# Copy test output to your local machine
+scp -r pi@<raspberry-pi-ip>:~/orthanc/camera_test_output ./
+scp -r pi@<raspberry-pi-ip>:~/orthanc/yolo_test_output ./
+```
+
+## Project Architecture
+
 ```
 orthanc/
-├── main.cpp              # Main control loop  
-├── Turret.h/cpp          # High-level turret control (in development)
-├── ServoController.h/cpp # Low-level servo interface ✅
-├── SignalGenerator.h/cpp # Test pattern generation ✅
-└── README.md
+├── .gitignore               # Git exclusions
+├── README.md                # This file
+├── requirements.txt         # Python dependencies
+├── venv/                    # Python virtual environment (not in git)
+├── src/
+│   ├── main.cpp             # Main control loop with signal interrupt handling
+│   ├── Turret.h/.cpp        # High-level turret API (in development)
+│   ├── ServoController.h/.cpp  # Low-level servo PWM interface ✅
+│   └── SignalGenerator.h/.cpp  # Test pattern generation ✅
+├── scripts/
+│   └── yolo_detector.py     # YOLOv8 detection → C++ bridge (planned)
+├── tests/
+│   ├── test_servo.cpp       # Basic PWM motion test ✅
+│   ├── test_camera_headless.py     # Camera validation ✅
+│   └── test_yolo_headless.py       # YOLO detection validation ✅
+├── camera_test_output/      # Camera test results (not in git)
+└── yolo_test_output/        # YOLO test results (not in git)
 ```
 
 ## Current Status
@@ -108,38 +193,31 @@ orthanc/
   - Triangle wave patterns
   - No pre-computation (evaluates at any time t)
 
+- **YOLOv8 Integration**: Computer vision pipeline:
+  - Camera validation and frame capture
+  - YOLOv8 object detection (tested)
+  - Headless operation for remote development
+
 ### In Progress 🔄
 - **Turret Class**: High-level API wrapping pan/tilt/laser control
-- **Motion Profiling**: Smooth trajectory generation
+- **IPC Bridge**: Python YOLO → C++ servo control communication
+- **Smooth Tracking**: Exponential smoothing for natural target following
 
 ### Planned 📋
-- **Computer Vision**: YOLOv8 object detection pipeline
 - **Tracking Algorithm**: Kalman filter for velocity estimation and prediction
 - **Laser Control**: Target designation system
 - **Multi-Agent**: ROS2 integration for turret swarm coordination
-
-## Usage
-
-### Current Test Mode
-```bash
-./orthanc
-# Executes signal generator test patterns on pan/tilt servos
-# Press Ctrl+C to stop and center servos
-```
-
-The test program demonstrates:
-- Smooth servo motion using signal generator
-- Proper initialization and cleanup
-- Safe shutdown on interrupt (Ctrl+C)
 
 ## Development Roadmap
 
 **November 2024:**
 - [x] ServoController architecture
 - [x] Signal generator implementation
-- [ ] Complete Turret class wrapper
-- [ ] Integrate computer vision (webcam + YOLOv8)
-- [ ] Implement basic tracking
+- [x] Complete Turret class wrapper
+- [x] Camera integration and testing
+- [x] YOLOv8 detection pipeline validation
+- [ ] Python → C++ IPC implementation (named pipes)
+- [ ] Real-time target tracking
 
 **December 2024:**
 - [ ] Add Kalman filter for predictive tracking
@@ -156,7 +234,7 @@ The test program demonstrates:
 **Servos not responding:**
 ```bash
 # Check if pigpiod is running
-pgrep pigpiod
+sudo systemctl status pigpiod
 
 # Restart daemon if needed
 sudo systemctl restart pigpiod
@@ -169,10 +247,29 @@ sudo rm /var/run/pigpio.pid
 sudo pigpiod
 ```
 
-**Jittery servo motion:**
-- Check power supply (weak 5V rail can cause jitter)
-- Verify GPIO connections are secure
-- Ensure pigpiod is running with sufficient privileges
+**Camera not detected:**
+```bash
+# Check camera status
+vcgencmd get_camera
+# Expected: supported=1 detected=1
+
+# Enable camera if needed
+sudo raspi-config
+# Interface Options → Camera → Enable → Reboot
+```
+
+**Qt/Display errors when running tests over SSH:**
+- Use the headless test scripts (`test_camera_headless.py`, `test_yolo_headless.py`)
+- These scripts save output images instead of displaying them
+
+**YOLOv8 model download fails:**
+```bash
+# Manually download model
+cd ~
+wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt
+
+# Model auto-downloads to ~/.cache/ultralytics/ on first run
+```
 
 ## Architecture Notes
 
@@ -181,12 +278,20 @@ sudo pigpiod
 - **RAII resource management**: Automatic cleanup prevents resource leaks
 - **Copy prevention**: ServoControllers cannot be copied (prevents dual control conflicts)
 - **Time-based signals**: SignalGenerator evaluates at any time without pre-computing arrays
+- **Headless testing**: All vision tests save output files for remote development
+- **Separate processes**: Python (YOLO) and C++ (servos) run independently, communicate via IPC
 
 ### Why C++?
-- Real-time performance requirements
+- Real-time performance requirements (50Hz servo control loop)
 - Low-level hardware control
 - Preparation for ROS2 integration (C++ native)
 - Embedded systems best practices
+
+### Why Python for Vision?
+- YOLOv8 ecosystem and pretrained models
+- Rapid prototyping for computer vision
+- OpenCV integration
+- Decoupled from real-time servo control
 
 ## Contributing
 This is an active development project. Contributions welcome after core tracking system is complete.
@@ -198,33 +303,4 @@ MIT License - See LICENSE file for details
 - Inspired by defense-tech applications and Tolkien's Orthanc tower
 - Built with pigpio library for reliable GPIO control
 - Signal generation architecture influenced by control systems theory
-=======
-**Overview**
-
-This robot can move with pan/tilt functionality via motion controllers in C++.
-
-**Bill of Materials**
-
--RaspberryPi 4: https://vilros.com/products/raspberry-pi-4-model-b-1?variant=40809478750302&country=US&currency=USD&utm_medium=product_sync&utm_source=google&utm_content=sag_organic&utm_campaign=sag_organic&tw_source=google&tw_adid=&tw_campaign=19684058556&gad_source=4&gad_campaignid=19684058613&gbraid=0AAAAAD1QJAjEBBM33-wmkODVKD7MW20ge&gclid=Cj0KCQjw5onGBhDeARIsAFK6QJYBMe_ULjNbXKXG4-nAZ0vRzUujs97eeRkRN07h2lzJH7UucQjYrW0aAqtJEALw_wcB
-
--RaspberryPi 4 charger: https://www.newark.com/raspberry-pi/sc0218/rpi-power-supply-usb-c-5-1v-3a/dp/03AH7034?CMP=KNC-GUSA-PMAX-SHOPPING-ONBOARD-COMP-NEW&mckv=_dc|pcrid||plid||kword||match||slid||product|03AH7034|pgrid||ptaid||&gad_source=1&gad_campaignid=22957739450&gbraid=0AAAAAD5U_g3noAyNJXRbrbLDB7WvxXL9c&gclid=Cj0KCQjw5onGBhDeARIsAFK6QJZuPxSgGmA-fchVQFMMbaFAxiFpXCWWFYP2dVo4Yf00-OqNIMlm94UaAhiNEALw_wcB
-
--MicroSD card: https://shop.sandisk.com/products/memory-cards/microsd-cards/sandisk-ultra-uhs-i-microsd?sku=SDSQUAC-256G-GN6MA&ef_id=Cj0KCQjw5onGBhDeARIsAFK6QJZq9oXigKwOKMaYQoy68BFhKIx-FvX3doK0AE07Pt_gKbEKBOpIPTEaAn0YEALw_wcB:G:s&s_kwcid=AL!15012!3!!!!x!!!21840826498!&utm_medium=pdsh2&utm_source=gads&utm_campaign=Google-B2C-Conversion-Pmax-NA-US-EN-Memory_Card-All-All-Brand&utm_content=&utm_term=SDSQUAC-256G-GN6MA&cp2=&gad_source=4&gad_campaignid=21836907008&gbraid=0AAAAA-HVYqnR4xOjgBaxD24l-IEJuHxfs&gclid=Cj0KCQjw5onGBhDeARIsAFK6QJZq9oXigKwOKMaYQoy68BFhKIx-FvX3doK0AE07Pt_gKbEKBOpIPTEaAn0YEALw_wcB
-
--Mini pan/tilt camera platform anti-vibration camera mount: https://www.sparkfun.com/pan-tilt-bracket-kit-single-attachment.html?gad_source=1&gad_campaignid=21251727806&gbraid=0AAAAADsj4ESYE2Ukpu_jOgP2MIjbUoXqX&gclid=Cj0KCQjwmYzIBhC6ARIsAHA3IkQzGkBx5MLOkwfqv3i62o_xMlFFdkE2P1p6vAhUKDXnprwdBpdwXNcaAm2bEALw_wcB
-
--Logitech Webcamera: https://www.digikey.com/en/products/detail/seeed-technology-co-ltd/402990004/5488098
-
--(Optional) RasberryPi GPIO expansion board: https://www.treedixofficial.com/products/treedix-rpi-gpio-terminal-block-breakout-board-module-expansion-board-compatible-with-raspberry-pi-4b-3b-3b-2b-zero-zero-w?variant=42584983240958&country=US&currency=USD&utm_medium=product_sync&utm_source=google&utm_content=sag_organic&utm_campaign=sag_organic&srsltid=AfmBOoo-a8o3SQ5zQ-2aiB8bfsIo50FG7bkaSU9nsPlDt4HaPSbPV9VgRE8
-
--Jumper cables (as needed)
-
-
-**Getting Started**
-Plg the pan and tilt servos into pins 11 (GPIO 17) 13(GPIO 27) respectively.
-
-The stand itself can be put together via this helper video: https://www.youtube.com/watch?v=HUTcWrGf2Hk
-
-
-
->>>>>>> 3e64848276017836244cf8cc2de0b73bc0eab069
+- Object detection powered by Ultralytics YOLOv8
