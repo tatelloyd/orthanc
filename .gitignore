@@ -16,7 +16,7 @@ runs/
 # Build artifacts
 *.o
 orthanc
-test_servo
+test_pan_tilt
 
 # IDE
 .vscode/
@@ -34,3 +34,4 @@ runs/
 # Test Directories
 camera_test_output
 yolo_test_output
+/tmp/yolo_detections

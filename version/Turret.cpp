@@ -41,7 +41,7 @@ void Turret::setTiltPulseWidth(int microseconds){
 
 void Turret::centerAll() {
     pan.center();
-    tilt.center();
+    tilt.setAngle(45);
 }
 
 double Turret::getPanAngle() const {

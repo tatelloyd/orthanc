@@ -49,12 +49,12 @@ int ServoController::clampPulseWidth(int pw) const {
 int ServoController::angleToPulseWidth(double degrees) const {
     // Map -90 to +90 degrees to min_pw to max_pw
     // Adjust this mapping based on your servo's actual range
-    double normalized = (degrees + 90.0) / 180.0;  // 0.0 to 1.0
+    double normalized = degrees / 180.0;  // 0.0 to 1.0
     return static_cast<int>(min_pw + normalized * (max_pw - min_pw));
 }
 
 double ServoController::pulseWidthToAngle(int pw) const {
     // Inverse of angleToPulseWidth
     double normalized = static_cast<double>(pw - min_pw) / (max_pw - min_pw);
-    return normalized * 180.0 - 90.0;
+    return normalized * 180.0;
 }
