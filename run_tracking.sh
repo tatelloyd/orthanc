@@ -30,14 +30,14 @@ if [ ! -f "./orthanc" ]; then
     echo "❌ Executable 'orthanc' not found!"
     echo ""
     echo "Please compile first:"
-    echo "  g++ -o orthanc src/main.cpp version/Turret.cpp version/ServoController.cpp version/SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2"
+    echo "  g++ -o orthanc src/cpp/main.cpp src/cpp/Turret.cpp src/cpp/ServoController.cpp src/cpp/SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2"
     echo ""
     exit 1
 fi
 
 # Check if Python script exists
-if [ ! -f "scripts/yolo_detector.py" ]; then
-    echo "⚠️  Warning: scripts/yolo_detector.py not found"
+if [ ! -f "src/python/yolo_detector.py" ]; then
+    echo "⚠️  Warning: src/python/yolo_detector.py not found"
     echo "   Option 3 (YOLO detection) will not work"
     echo ""
 fi

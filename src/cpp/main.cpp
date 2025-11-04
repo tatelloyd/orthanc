@@ -10,9 +10,9 @@
 #include <pigpiod_if2.h>
 
 // Header Files
-#include "../version/Turret.hpp"
-#include "../version/SignalGenerator.hpp"
-#include "../version/ServoController.hpp"
+#include "Turret.hpp"
+#include "SignalGenerator.hpp"
+#include "ServoController.hpp"
 #include <sys/wait.h>
 
 // Use a volatile atomic flag for safe access across threads/signal handlers
@@ -114,7 +114,7 @@ void testYOLO() {
     std::cout << "Press Ctrl+C in the detection window if you want to stop early\n\n";
     
     // Call the Python script
-    int result = system("python3 scripts/yolo_detector.py");
+    int result = system("python3 src/python/yolo_detector.py");
     
     if (result == 0) {
         std::cout << "\n✅ YOLO detection completed successfully\n";
@@ -143,7 +143,7 @@ void setAngle(const std::string& servoName, Turret& turret, SetAngleFunc setAngl
     
     (turret.*setAngle)(angle);
     std::cout << "✅ " << servoName << " set to " << (turret.*getAngle)() << "° (PWM: " 
-              << (600 + angle * 10) << "μs)\n";
+              << (500 + angle * 100 / 9) << "μs)\n";
 }
 
 // Test function 4: Set pan angle
@@ -161,7 +161,7 @@ void setTiltAngle(Turret& turret) {
 void centerTurret(Turret& turret) {
     std::cout << "\n🎯 Centering turret...\n";
     turret.centerAll();
-    std::cout << "✅ Turret centered at (90°, 90°)\n";
+    std::cout << "✅ Turret centered at (90°, 45°)\n";
 }
 
 // Test function 7: YOLO detection while moving servos
@@ -183,7 +183,7 @@ void testYOLOWithMovement(Turret& turret) {
     if (pid == 0) {
         // Child process: run YOLO detector
         // Redirect to avoid mixing output too much
-        execlp("python3", "python3", "scripts/yolo_detector.py", nullptr);
+        execlp("python3", "python3", "src/python/yolo_detector.py", nullptr);
         exit(1);  // If exec fails
     }
     
@@ -314,4 +314,4 @@ int main(){
     return 0;
 }
 
-// Compile: g++ -o orthanc main.cpp ../version/Turret.cpp ../version/ServoController.cpp ../version/SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2
+// Compile: g++ -o orthanc main.cpp Turret.cpp ServoController.cpp SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2
