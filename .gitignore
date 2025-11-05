@@ -1,37 +1,32 @@
+# Build artifacts
+build/
+bin/
+*.o
+*.so
+*.a
+
+# Executables
+orthanc
+
 # Python
 venv/
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-.Python
 *.egg-info/
-.pytest_cache/
 
-# YOLO model cache
-*.pt
-runs/
-.ultralytics/
-
-# Build artifacts
-*.o
-orthanc
-test_pan_tilt
+# Test outputs
+camera_test_output/
+yolo_test_output/
+fov_calibration_output/
 
 # IDE
 .vscode/
-.idea/# Python
-venv/
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+.idea/
+*.swp
+*~
 
-# YOLO cache
-*.pt
-runs/
+# DS
 
-# Test Directories
-camera_test_output
-yolo_test_output
-/tmp/yolo_detections
+# Config (if contains sensitive data)
+# config/turret_config.json

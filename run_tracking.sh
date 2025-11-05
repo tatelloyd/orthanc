@@ -25,14 +25,22 @@ fi
 
 echo ""
 
-# Check if executable exists
-if [ ! -f "./orthanc" ]; then
-    echo "❌ Executable 'orthanc' not found!"
+# Check if executable exists in new location
+if [ ! -f "./bin/orthanc" ]; then
+    echo "❌ Executable 'bin/orthanc' not found!"
     echo ""
-    echo "Please compile first:"
-    echo "  g++ -o orthanc src/cpp/main.cpp src/cpp/Turret.cpp src/cpp/ServoController.cpp src/cpp/SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2"
+    echo "Please build first using CMake:"
+    echo "  cmake -B build -S ."
+    echo "  cmake --build build"
     echo ""
     exit 1
+fi
+
+# Check if config file exists
+if [ ! -f "config/turret_config.json" ]; then
+    echo "⚠️  Warning: config/turret_config.json not found"
+    echo "   Using default configuration"
+    echo ""
 fi
 
 # Check if Python script exists
@@ -42,10 +50,18 @@ if [ ! -f "src/python/yolo_detector.py" ]; then
     echo ""
 fi
 
-# Run the program
+# Activate Python virtual environment if it exists
+if [ -d "venv" ]; then
+    echo "🐍 Activating Python virtual environment..."
+    source venv/bin/activate
+    echo "✅ Virtual environment activated"
+    echo ""
+fi
+
+# Run the program from new location
 echo "🚀 Starting Orthanc turret control system..."
 echo ""
-./orthanc
+./bin/orthanc "$@"
 
 # Cleanup message
 echo ""

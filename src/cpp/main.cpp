@@ -114,7 +114,7 @@ void testYOLO() {
     std::cout << "Press Ctrl+C in the detection window if you want to stop early\n\n";
     
     // Call the Python script
-    int result = system("python3 src/python/yolo_detector.py");
+    int result = system("venv/bin/python src/python/yolo_detector.py");
     
     if (result == 0) {
         std::cout << "\n✅ YOLO detection completed successfully\n";
@@ -172,31 +172,26 @@ void testYOLOWithMovement(Turret& turret) {
     std::cout << "The turret will scan while detecting objects for 20 seconds\n";
     std::cout << "This demonstrates simultaneous camera detection and servo control!\n\n";
     
-    // Fork a child process to run YOLO detector
-    pid_t pid = fork();
+    // Start YOLO in background using system() - simpler and more reliable
+    std::cout << "🎯 Starting YOLO detector in background...\n";
+    int yolo_result = system("venv/bin/python src/python/yolo_detector.py &");
     
-    if (pid < 0) {
-        std::cerr << "❌ Failed to fork process\n";
-        return;
+    if (yolo_result != 0) {
+        std::cerr << "⚠️  Warning: Failed to start YOLO detector\n";
     }
     
-    if (pid == 0) {
-        // Child process: run YOLO detector
-        // Redirect to avoid mixing output too much
-        execlp("python3", "python3", "src/python/yolo_detector.py", nullptr);
-        exit(1);  // If exec fails
-    }
+    std::this_thread::sleep_for(std::chrono::seconds(1)); // Let it start
     
     // Parent process: move servos while detection runs
     std::cout << "🤖 Servo scanning pattern starting...\n\n";
     
     auto start_time = steady_clock::now();
-    const double scan_duration = 20.0;  // Run for 20 seconds (2x YOLO duration)
+    const double scan_duration = 20.0;
     const double dt = 0.02;
     
     // Create scanning patterns
-    SignalGenerator panSignal(700, 2.0, 1500);    // Slow pan sweep
-    SignalGenerator tiltSignal(400, 2.0, 1300);   // Smaller tilt range
+    SignalGenerator panSignal(700, 2.0, 1500);
+    SignalGenerator tiltSignal(400, 2.0, 1300);
     
     while (std::chrono::duration_cast<std::chrono::duration<double>>(
             steady_clock::now() - start_time).count() < scan_duration) {
@@ -204,14 +199,12 @@ void testYOLOWithMovement(Turret& turret) {
         double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(
             steady_clock::now() - start_time).count();
         
-        // Move both servos in a scanning pattern
         double pan_pulse = panSignal.sine(elapsed);
         double tilt_pulse = tiltSignal.triangle(elapsed);
         
         turret.setPanPulseWidth(pan_pulse);
         turret.setTiltPulseWidth(tilt_pulse);
         
-        // Print status every 2 seconds
         if (static_cast<int>(elapsed * 10) % 20 == 0) {
             std::cout << "  [Servo] t=" << elapsed << "s, Pan: " 
                       << turret.getPanAngle() << "°, Tilt: " 
@@ -221,15 +214,12 @@ void testYOLOWithMovement(Turret& turret) {
         std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(dt * 1000)));
     }
     
-    // Wait for YOLO process to finish (it should be done by now)
-    int status;
-    waitpid(pid, &status, 0);
-    
     // Return to center
     centerTurret(turret);
     
     std::cout << "\n✅ Simultaneous detection and movement test complete!\n";
     std::cout << "   Servos returned to center position.\n";
+    std::cout << "   (YOLO detector will finish its 10-second run)\n";
 }
 
 int main(){ 
