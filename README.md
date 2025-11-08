@@ -173,16 +173,16 @@ The launcher script will:
 
 ```
 ╔════════════════════════════════════════════════════════╗
-║          ORTHANC TURRET CONTROL MENU                  ║
+║          ORTHANC TURRET CONTROL MENU                   ║
 ╠════════════════════════════════════════════════════════╣
-║  1. PWM Test (basic servo movement)                   ║
-║  2. Signal Generator Test (sine/triangle patterns)    ║
-║  3. YOLO Detection (10-second capture)                ║
-║  4. Camera FOV Measurement                            ║
-║  5. Manual Control (keyboard angle input)             ║
-║  6. Center Position (return to 0°)                    ║
-║  7. YOLO + Servo Movement (simultaneous demo)         ║
-║  0. Exit                                              ║
+║  1. PWM Test (basic servo movement)                    ║
+║  2. Signal Generator Test (sine/triangle patterns)     ║
+║  3. YOLO Detection (10-second capture)                 ║
+║  4. Camera FOV Measurement                             ║
+║  5. Manual Control (keyboard angle input)              ║
+║  6. Center Position (return to 0°)                     ║
+║  7. YOLO + Servo Movement (simultaneous demo)          ║
+║  0. Exit                                               ║
 ╚════════════════════════════════════════════════════════╝
 ```
 

@@ -1,307 +1,454 @@
-// Libraries
+// agent_tracker.cpp - AI-Powered Person Tracking System
 #include <iostream>
-#include <csignal>
-#include <atomic>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <chrono>
 #include <thread>
-#include <algorithm>
-#include <cstdlib>
-#include <limits>
-#include <pigpiod_if2.h>
-
-// Header Files
-#include "Turret.hpp"
-#include "SignalGenerator.hpp"
-#include "ServoController.hpp"
+#include <atomic>
+#include <csignal>
+#include <cmath>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
+#include <nlohmann/json.hpp>
+#include <curl/curl.h>
+#include <sys/stat.h>
 
-// Use a volatile atomic flag for safe access across threads/signal handlers
-std::atomic<bool> program_running(true);
+#include "Turret.hpp"
 
+using json = nlohmann::json;
+
+// Global flags
+std::atomic<bool> tracking_active(true);
+
+
+// Detection data structure
+struct Detection {
+    std::string label;
+    double confidence;
+    double x;  // Normalized 0-1
+    double y;  // Normalized 0-1
+    long timestamp_ms;
+};
+
+// CURL callback for API responses
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
+    userp->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}
+
+// Signal handler
 void signal_handler(int signum) {
-    std::cout << "\nSIGINT (" << signum << ") received. Shutting down gracefully..." << std::endl;
-    program_running = false; // Set the flag to stop the main loop
+    std::cout << "\n🛑 SIGINT received. Shutting down tracker..." << std::endl;
+    tracking_active = false;
 }
 
-// Clear input buffer
-void clearInput() {
-    std::cin.clear();
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-}
-
-// Display menu and get user choice
-int getMenuChoice() {
-    std::cout << "\n";
-    std::cout << "╔════════════════════════════════════════════════════════╗\n";
-    std::cout << "║          ORTHANC TURRET CONTROL MENU                   ║\n";
-    std::cout << "╠════════════════════════════════════════════════════════╣\n";
-    std::cout << "║  1. Pan back and forth for 10 seconds                  ║\n";
-    std::cout << "║  2. Tilt back and forth for 10 seconds                 ║\n";
-    std::cout << "║  3. Run YOLO detection (print objects to screen)       ║\n";
-    std::cout << "║  4. Set pan angle (0-180 degrees)                      ║\n";
-    std::cout << "║  5. Set tilt angle (0-180 degrees)                     ║\n";
-    std::cout << "║  6. Center turret (90°, 90°)                           ║\n";
-    std::cout << "║  7. Live detection while moving                        ║\n";
-    std::cout << "║  0. Exit                                               ║\n";
-    std::cout << "╚════════════════════════════════════════════════════════╝\n";
-    std::cout << "Enter choice: ";
+// Call Claude API for tracking decisions
+std::string callClaudeAPI(const std::string& api_key, const std::string& prompt) {
+    CURL* curl = curl_easy_init();
+    std::string response_string;
     
-    int choice;
-    std::cin >> choice;
-    
-    if (std::cin.fail()) {
-        clearInput();
-        return -1;
+    if (!curl) {
+        std::cerr << "Failed to initialize CURL" << std::endl;
+        return "{}";
     }
     
-    clearInput();
-    return choice;
+    // Prepare request body
+    json request_body = {
+        {"model", "claude-sonnet-4-20250514"},
+        {"max_tokens", 500},
+        {"system", R"(You are a security tracking system AI controlling a camera turret. 
+Your job is to track suspicious individuals (any human detected) for perimeter security.
+You receive detection data and must decide how to move the turret (pan/tilt adjustments).
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "action": "track" or "scan" or "hold",
+  "target_index": <index of person to track, or -1>,
+  "pan_adjustment": <degrees to adjust pan, -50 to +50>,
+  "tilt_adjustment": <degrees to adjust tilt, -50 to +50>,
+  "reasoning": "<brief explanation>"
 }
 
-// Template function for servo testing (pan or tilt)
-template<typename SetPulseFunc, typename GetAngleFunc>
-void testServo(const std::string& servoName, Turret& turret, 
-               SetPulseFunc setPulse, GetAngleFunc getAngle, double endPulse) {
-    using namespace std::chrono;
+Rules:
+- Always prioritize tracking humans labeled as "person"
+- If multiple people, track the closest to center (lowest distance from 0.5, 0.5)
+- Use AGGRESSIVE proportional control: Move quickly to catch targets
+  * If target is far from center (distance > 0.3), use large adjustments (30-50°)
+  * If target is near center (distance < 0.2), use fine adjustments (5-15°)
+  * Calculate: adjustment = error * gain, where gain = 80-100 degrees per normalized unit
+- Max ±50 degrees per cycle for fast response
+- If no person detected, scan aggressively with 20-30° movements
+- This is a security system - tracking humans is your primary function
+- RESPOND FAST: Targets move quickly, use large movements to keep them in frame)"},
+        {"messages", json::array({
+            {{"role", "user"}, {"content", prompt}}
+        })}
+    };
     
-    std::cout << "\n🔄 Testing " << servoName << " servo (10 seconds)...\n";
-    std::cout << "Moving from 0° to 180° and back\n";
+    std::string json_str = request_body.dump();
     
-    auto start_time = steady_clock::now();
-    const double test_duration = 10.0;
-    const double dt = 0.02;  // 50Hz
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    std::string auth_header = "x-api-key: " + api_key;
+    headers = curl_slist_append(headers, auth_header.c_str());
+    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     
-    // Create a sine wave signal (0-180 degrees over 10 seconds)
-    SignalGenerator signal(900, 2.0, 1500);  // Full range, 10s period
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.anthropic.com/v1/messages");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_string);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     
-    while (std::chrono::duration_cast<std::chrono::duration<double>>(
-            steady_clock::now() - start_time).count() < test_duration) {
+    CURLcode res = curl_easy_perform(curl);
+    
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    
+    if (res != CURLE_OK) {
+        std::cerr << "CURL error: " << curl_easy_strerror(res) << std::endl;
+        return "{}";
+    }
+    
+    return response_string;
+}
+
+// Parse Claude's response and extract tracking commands
+json parseTrackingCommand(const std::string& response) {
+    try {
+        json full_response = json::parse(response);
         
-        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(
-            steady_clock::now() - start_time).count();
+        // Extract text content from Claude's response
+        if (full_response.contains("content") && full_response["content"].is_array()) {
+            for (const auto& content_block : full_response["content"]) {
+                if (content_block.contains("text")) {
+                    std::string text = content_block["text"];
+                    
+                    // Find JSON in the response (strip markdown if present)
+                    size_t start = text.find('{');
+                    size_t end = text.rfind('}');
+                    if (start != std::string::npos && end != std::string::npos) {
+                        std::string json_str = text.substr(start, end - start + 1);
+                        return json::parse(json_str);
+                    }
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error parsing Claude response: " << e.what() << std::endl;
+    }
+    
+    // Default fallback
+    return {
+        {"action", "hold"},
+        {"target_index", -1},
+        {"pan_adjustment", 0},
+        {"tilt_adjustment", 0},
+        {"reasoning", "Parse error - holding position"}
+    };
+}
+
+// Format detection data for Claude
+std::string formatDetectionPrompt(const std::vector<Detection>& detections, 
+                                  double current_pan, double current_tilt) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1);
+    oss << "Current turret position: Pan=" << current_pan << "° (0°=LEFT, 90°=CENTER, 180°=RIGHT), Tilt=" << current_tilt << "°\n";
+    oss << "You can move across the FULL range: Pan 0-180°, Tilt 0-180°\n\n";
+    
+    if (detections.empty()) {
+        oss << "No objects detected in frame.\n";
+        oss << "Execute wide scanning: if pan < 90°, suggest +40° to scan right. If pan > 90°, suggest -40° to scan left.\n";
+        oss << "Cover the full 180° range systematically.";
+        return oss.str();
+    }
+    
+    oss << "Detected objects (" << detections.size() << " total):\n";
+    for (size_t i = 0; i < detections.size(); i++) {
+        const auto& det = detections[i];
+        double dist_from_center = std::sqrt(
+            std::pow(det.x - 0.5, 2) + std::pow(det.y - 0.5, 2)
+        );
         
-        double pulse = signal.sine(elapsed);
-        (turret.*setPulse)(pulse);  // Call member function through pointer
+        oss << i << ". " << det.label 
+            << " (confidence: " << std::fixed << std::setprecision(2) << det.confidence
+            << ", position: x=" << det.x << ", y=" << det.y
+            << ", distance_from_center=" << dist_from_center << ")\n";
+    }
+    
+    oss << "\nTarget center is at x=0.5, y=0.5.\n";
+    oss << "X > 0.5 means target is to the RIGHT (increase pan).\n";
+    oss << "Y > 0.5 means target is BELOW center (decrease tilt).\n";
+    oss << "\nDecide which target to track and how to adjust the turret.";
+    
+    return oss.str();
+}
+
+
+// FAST TRACKING LOOP - Replace trackingLoop function
+// Uses simple proportional control for real-time tracking
+// Calls Claude only occasionally for high-level decisions
+
+void trackingLoop(Turret& turret, const std::string& api_key) {
+    std::cout << "\n🎯 AI Tracking Loop Started (Fast Mode)\n";
+    std::cout << "Using real-time proportional control + periodic AI oversight\n\n";
+    
+    const double control_rate = 20.0; // Hz - MUCH faster!
+    const double loop_period = 1.0 / control_rate;
+    const double ai_consult_interval = 5.0; // Ask Claude every 5 seconds
+    
+    int cycle_count = 0;
+    auto last_ai_consult = std::chrono::steady_clock::now();
+    auto last_file_time = std::chrono::system_clock::time_point::min();
+    
+    const std::string detection_file = "detections.json";
+    
+    // Tracking state
+    bool tracking_person = false;
+    Detection last_known_person = {"person", 0.0, 0.5, 0.5, 0};
+    int frames_without_person = 0;
+    const int memory_frames = 60; // Remember for 60 frames (~3 sec at 20Hz) - DOUBLED!
+    std::string last_ai_decision = "Starting patrol";
+    
+    while (tracking_active) {
+        auto cycle_start = std::chrono::steady_clock::now();
         
-        // Print status every 0.5s
-        if (static_cast<int>(elapsed * 10) % 5 == 0) {
-            std::cout << "  t=" << elapsed << "s, " << servoName 
-                      << " angle: " << (turret.*getAngle)() << "°\n";
+        // Check if file has been modified
+        struct stat file_stat;
+        bool file_updated = false;
+        if (stat(detection_file.c_str(), &file_stat) == 0) {
+            auto file_time = std::chrono::system_clock::from_time_t(file_stat.st_mtime);
+            if (file_time > last_file_time) {
+                file_updated = true;
+                last_file_time = file_time;
+            }
         }
         
-        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(dt * 1000)));
-    }
-    
-    // Return to center
-    (turret.*setPulse)(endPulse);
-    std::cout << "✅ " << servoName << " test complete. Returned to center.\n";
-}
-
-// Test function 1: Pan back and forth
-void testPan(Turret& turret) {
-    testServo("PAN", turret, &Turret::setPanPulseWidth, &Turret::getPanAngle, 1500);
-}
-
-// Test function 2: Tilt back and forth
-void testTilt(Turret& turret) {
-    testServo("TILT", turret, &Turret::setTiltPulseWidth, &Turret::getTiltAngle, 1000);
-}
-
-// Test function 3: Run YOLO detection
-void testYOLO() {
-    std::cout << "\n🎯 Starting YOLO detection...\n";
-    std::cout << "Running Python detection script for 10 seconds\n";
-    std::cout << "Press Ctrl+C in the detection window if you want to stop early\n\n";
-    
-    // Call the Python script
-    int result = system("venv/bin/python src/python/yolo_detector.py");
-    
-    if (result == 0) {
-        std::cout << "\n✅ YOLO detection completed successfully\n";
-    } else {
-        std::cout << "\n⚠️  YOLO detection exited with code " << result << "\n";
-    }
-}
-
-template<typename SetAngleFunc, typename GetAngleFunc>
-void setAngle(const std::string& servoName, Turret& turret, SetAngleFunc setAngle, GetAngleFunc getAngle) {
-    std::cout << "\n📐 Enter " << servoName <<" angle (0-180 degrees): ";
-    double angle;
-    std::cin >> angle;
-    
-    if (std::cin.fail()) {
-        clearInput();
-        std::cout << "❌ Invalid input\n";
-        return;
-    }
-    clearInput();
-    
-    if (angle < 0 || angle > 180) {
-        std::cout << "❌ Angle must be between 0 and 180 degrees\n";
-        return;
-    }
-    
-    (turret.*setAngle)(angle);
-    std::cout << "✅ " << servoName << " set to " << (turret.*getAngle)() << "° (PWM: " 
-              << (500 + angle * 100 / 9) << "μs)\n";
-}
-
-// Test function 4: Set pan angle
-void setPanAngle(Turret& turret) {
-   setAngle("PAN", turret, &Turret::setPanAngle, &Turret::getPanAngle);
-}
-
-
-// Test function 5: Set tilt angle
-void setTiltAngle(Turret& turret) {
-    setAngle("Tilt", turret, &Turret::setTiltAngle, &Turret::getTiltAngle);
-}
-
-// Test function 6: Center the turret
-void centerTurret(Turret& turret) {
-    std::cout << "\n🎯 Centering turret...\n";
-    turret.centerAll();
-    std::cout << "✅ Turret centered at (90°, 45°)\n";
-}
-
-// Test function 7: YOLO detection while moving servos
-void testYOLOWithMovement(Turret& turret) {
-    using namespace std::chrono;
-    
-    std::cout << "\n🎯🔄 Starting YOLO detection with servo movement...\n";
-    std::cout << "The turret will scan while detecting objects for 20 seconds\n";
-    std::cout << "This demonstrates simultaneous camera detection and servo control!\n\n";
-    
-    // Start YOLO in background using system() - simpler and more reliable
-    std::cout << "🎯 Starting YOLO detector in background...\n";
-    int yolo_result = system("venv/bin/python src/python/yolo_detector.py &");
-    
-    if (yolo_result != 0) {
-        std::cerr << "⚠️  Warning: Failed to start YOLO detector\n";
-    }
-    
-    std::this_thread::sleep_for(std::chrono::seconds(1)); // Let it start
-    
-    // Parent process: move servos while detection runs
-    std::cout << "🤖 Servo scanning pattern starting...\n\n";
-    
-    auto start_time = steady_clock::now();
-    const double scan_duration = 20.0;
-    const double dt = 0.02;
-    
-    // Create scanning patterns
-    SignalGenerator panSignal(700, 2.0, 1500);
-    SignalGenerator tiltSignal(400, 2.0, 1300);
-    
-    while (std::chrono::duration_cast<std::chrono::duration<double>>(
-            steady_clock::now() - start_time).count() < scan_duration) {
-        
-        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(
-            steady_clock::now() - start_time).count();
-        
-        double pan_pulse = panSignal.sine(elapsed);
-        double tilt_pulse = tiltSignal.triangle(elapsed);
-        
-        turret.setPanPulseWidth(pan_pulse);
-        turret.setTiltPulseWidth(tilt_pulse);
-        
-        if (static_cast<int>(elapsed * 10) % 20 == 0) {
-            std::cout << "  [Servo] t=" << elapsed << "s, Pan: " 
-                      << turret.getPanAngle() << "°, Tilt: " 
-                      << turret.getTiltAngle() << "°\n";
+        if (!file_updated) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
         }
         
-        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(dt * 1000)));
+        // Read detections
+        std::vector<Detection> current_detections;
+        {
+            std::ifstream file(detection_file);
+            if (file.is_open()){
+                try{
+                    json detection_data;
+                    file >> detection_data;
+                    if (detection_data.is_array()){
+                        for (const auto& det : detection_data) {
+                            Detection d;
+                            d.label = det.value("label", "unknown");
+                            d.confidence = det.value("confidence", 0.0);
+                            d.x = det.value("x", 0.5);
+                            d.y = det.value("y", 0.5);
+                            d.timestamp_ms = det.value("timestamp_ms", 0L);
+                            current_detections.push_back(d);
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    continue;
+                }
+                file.close();
+            }
+        }
+        
+        cycle_count++;
+        double current_pan = turret.getPanAngle();
+        double current_tilt = turret.getTiltAngle();
+        
+        // Find any person in detections
+        Detection* target_person = nullptr;
+        double best_distance = 999.0;
+        for (auto& det : current_detections) {
+            if (det.label == "person") {
+                double dist = std::sqrt(std::pow(det.x - 0.5, 2) + std::pow(det.y - 0.5, 2));
+                if (dist < best_distance) {
+                    best_distance = dist;
+                    target_person = &det;
+                }
+            }
+        }
+        
+        // Update memory
+        if (target_person) {
+            last_known_person = *target_person;
+            frames_without_person = 0;
+            tracking_person = true;
+        } else {
+            frames_without_person++;
+            // Use memory if we recently saw a person
+            if (frames_without_person < memory_frames) {
+                target_person = &last_known_person;
+                tracking_person = true;
+            } else {
+                tracking_person = false;
+            }
+        }
+        
+        double pan_adj = 0.0;
+        double tilt_adj = 0.0;
+        std::string action = "scan";
+        
+        if (tracking_person && target_person) {
+            // FAST PROPORTIONAL CONTROL - no API call needed!
+            tracking_person = true;
+            action = "track";
+            
+            // Calculate error from center (0.5, 0.5)
+            double x_error = target_person->x - 0.5;  // Positive = right
+            double y_error = target_person->y - 0.5;  // Positive = down
+            
+            // Smooth proportional gain with damping
+            const double pan_gain = 40.0;  // Reduced from 100 for smoother tracking
+            const double tilt_gain = 30.0;  // Reduced from 80
+            
+            // Add deadband - don't move if error is tiny
+            if (std::abs(x_error) < 0.05) x_error = 0;
+            if (std::abs(y_error) < 0.05) y_error = 0;
+            
+            pan_adj = x_error * pan_gain;
+            tilt_adj = -y_error * tilt_gain;  // Negative because Y+ is down but tilt+ is up
+            
+            // Tighter clamps for smoother motion
+            pan_adj = std::clamp(pan_adj, -25.0, 25.0);
+            tilt_adj = std::clamp(tilt_adj, -25.0, 25.0);
+            
+            // Print every 10 cycles to reduce spam
+            if (cycle_count % 10 == 0) {
+                std::string status = (frames_without_person > 0) ? " [MEMORY]" : "";
+                std::cout << "🎯 Tracking" << status << ": Pan=" << current_pan << "° Tilt=" << current_tilt 
+                          << "° | Person@(" << target_person->x << "," << target_person->y 
+                          << ") | Adjust: Δ" << pan_adj << "°,Δ" << tilt_adj << "°\n";
+            }
+            
+        } else {
+            // No person detected - use simple scanning
+            tracking_person = false;
+            action = "scan";
+            
+            // DON'T consult Claude frequently - only when we've truly lost the target
+            auto time_since_ai = std::chrono::duration<double>(
+                cycle_start - last_ai_consult).count();
+            
+            // Only consult if we haven't seen a person in a while (memory expired)
+            if (time_since_ai > ai_consult_interval && frames_without_person >= memory_frames) {
+                std::cout << "\n🤖 Consulting Claude for scanning strategy...\n";
+                
+                std::string prompt = formatDetectionPrompt(current_detections, current_pan, current_tilt);
+                std::string response = callClaudeAPI(api_key, prompt);
+                json command = parseTrackingCommand(response);
+                
+                pan_adj = command.value("pan_adjustment", 0.0);
+                tilt_adj = command.value("tilt_adjustment", 0.0);
+                last_ai_decision = command.value("reasoning", "Scanning");
+                
+                std::cout << "   AI says: " << last_ai_decision << "\n";
+                std::cout << "   Adjust: Δpan=" << pan_adj << "° Δtilt=" << tilt_adj << "°\n\n";
+                
+                last_ai_consult = cycle_start;
+            } else {
+                // Simple hold position or small scan while memory is active
+                if (frames_without_person < memory_frames) {
+                    // Hold position - we just lost the person, don't sweep yet!
+                    pan_adj = 0.0;
+                    tilt_adj = 0.0;
+                    
+                    if (cycle_count % 20 == 0) {
+                        std::cout << "⏳ Holding position (lost target for " 
+                                  << frames_without_person << " frames)\n";
+                    }
+                } else {
+                    // Memory expired - do simple back-and-forth scan
+                    if (current_pan <= 30) {
+                        pan_adj = 30.0;  // Scan right
+                    } else if (current_pan >= 150) {
+                        pan_adj = -30.0;  // Scan left
+                    } else {
+                        pan_adj = (current_pan < 90) ? 30.0 : -30.0;
+                    }
+                    
+                    if (cycle_count % 20 == 0) {
+                        std::cout << "🔍 Scanning: Pan=" << current_pan << "° → " 
+                                  << (current_pan + pan_adj) << "° (no targets)\n";
+                    }
+                }
+            }
+        }
+        
+        // Apply movements
+        double new_pan = std::clamp(current_pan + pan_adj, 0.0, 180.0);
+        double new_tilt = std::clamp(current_tilt + tilt_adj, 0.0, 180.0);
+        
+        turret.setPanAngle(new_pan);
+        turret.setTiltAngle(new_tilt);
+        
+        // Sleep to maintain control rate
+        auto cycle_end = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration<double>(cycle_end - cycle_start).count();
+        double sleep_time = loop_period - elapsed;
+        if (sleep_time > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(static_cast<int>(sleep_time * 1000))
+            );
+        }
     }
     
-    // Return to center
-    centerTurret(turret);
-    
-    std::cout << "\n✅ Simultaneous detection and movement test complete!\n";
-    std::cout << "   Servos returned to center position.\n";
-    std::cout << "   (YOLO detector will finish its 10-second run)\n";
+    std::cout << "\n🛑 Tracking loop terminated\n";
 }
 
-int main(){ 
-    // Set up signal handler    
+int main(int argc, char* argv[]) {
+    // Signal handler
     struct sigaction sa;
-    sa.sa_handler = signal_handler; // Set the handler function
-    sigemptyset(&sa.sa_mask);        // Clear the signal mask
-    sa.sa_flags = 0;                 // No special flags
-
-    // Register the signal handler for SIGINT
-    if (sigaction(SIGINT, &sa, nullptr) == -1) {
-        std::cerr << "Error registering signal handler" << std::endl;
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, nullptr);
+    
+    std::cout << "\n╔════════════════════════════════════════════════════════╗\n";
+    std::cout << "║         ORTHANC AI TRACKING SYSTEM v2.0                ║\n";
+    std::cout << "║         Anthropic Claude-Powered Security              ║\n";
+    std::cout << "╚════════════════════════════════════════════════════════╝\n\n";
+    
+    // Get API key
+    std::string api_key = std::getenv("ANTHROPIC_API_KEY") ? 
+                          std::getenv("ANTHROPIC_API_KEY") : "";
+    
+    if (api_key.empty()) {
+        std::cerr << "❌ Error: ANTHROPIC_API_KEY environment variable not set\n";
+        std::cerr << "   Export it with: export ANTHROPIC_API_KEY='your-key-here'\n";
         return 1;
     }
-
-    std::cout << "\n╔════════════════════════════════════════════════════════╗\n";
-    std::cout << "║              ORTHANC TURRET SYSTEM v1.0                ║\n";
-    std::cout << "║              Initializing...                           ║\n";
-    std::cout << "╚════════════════════════════════════════════════════════╝\n";
-
-    // Make turret object
+    
+    std::cout << "✅ API key loaded\n";
+    
+    // Initialize turret
+    std::cout << "🤖 Initializing turret hardware...\n";
     Turret orthanc(17, 27);
-
-    // Center the turret initially
-    std::cout << "\nCentering turret to default position (90°, 90°)...\n";
     orthanc.setPanAngle(90);
     orthanc.setTiltAngle(45);
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    std::cout << "✅ Turret initialized and ready\n";
-
-   // Main menu loop
-    while (program_running) {
-        int choice = getMenuChoice();
-        
-        switch (choice) {
-            case 1:
-                testPan(orthanc);
-                break;
-                
-            case 2:
-                testTilt(orthanc);
-                break;
-                
-            case 3:
-                testYOLO();
-                break;
-                
-            case 4:
-                setPanAngle(orthanc);
-                break;
-                
-            case 5:
-                setTiltAngle(orthanc);
-                break;
-                
-            case 6:
-                centerTurret(orthanc);
-                break;
-
-            case 7:
-                testYOLOWithMovement(orthanc);
-                break;
-
-            case 0:
-                std::cout << "\n👋 Exiting...\n";
-                program_running = false;
-                break;
-                
-            default:
-                std::cout << "❌ Invalid choice. Please enter 0-6.\n";
-                break;
-        }
-    }
-
-    // Return to center on exit
-    std::cout << "\n🔄 Returning to center position before shutdown...\n";
-    centerTurret(orthanc);
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::cout << "✅ Turret centered and ready\n\n";
     
-    std::cout << "✅ Shutdown complete. Goodbye!\n\n";
-
+    // TODO: Start YOLO detection in separate process
+    // For now, simulate with dummy data
+    std::cout << "⚠️  Detection service integration pending\n";
+    std::cout << "   Run YOLO detector separately or integrate IPC here\n\n";
+    
+    // Start tracking loop
+    trackingLoop(orthanc, api_key);
+    
+    // Cleanup
+    std::cout << "\n🔄 Returning to center...\n";
+    orthanc.centerAll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::cout << "✅ Shutdown complete\n\n";
+    
     return 0;
 }
-
-// Compile: g++ -o orthanc main.cpp Turret.cpp ServoController.cpp SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2

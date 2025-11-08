@@ -1,68 +1,35 @@
 #!/bin/bash
-# Simple launcher for Orthanc turret control system
+# Launch AI tracking system
 
-echo "╔════════════════════════════════════════════════════════╗"
-echo "║          ORTHANC TURRET LAUNCHER v1.0                  ║"
-echo "╚════════════════════════════════════════════════════════╝"
-echo ""
+set -e
 
-# Check if pigpiod is running
-if ! pgrep -x "pigpiod" > /dev/null; then
-    echo "⚠️  pigpiod is not running. Starting it now..."
-    sudo pigpiod
-    sleep 1
-    
-    if pgrep -x "pigpiod" > /dev/null; then
-        echo "✅ pigpiod started successfully"
-    else
-        echo "❌ Failed to start pigpiod"
-        echo "   Try running: sudo pigpiod"
-        exit 1
-    fi
-else
-    echo "✅ pigpiod is already running"
-fi
+echo "🚀 Starting ORTHANC AI Tracking System"
 
-echo ""
-
-# Check if executable exists in new location
-if [ ! -f "./bin/orthanc" ]; then
-    echo "❌ Executable 'bin/orthanc' not found!"
-    echo ""
-    echo "Please build first using CMake:"
-    echo "  cmake -B build -S ."
-    echo "  cmake --build build"
-    echo ""
+# Check API key
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo "❌ Error: ANTHROPIC_API_KEY not set"
+    echo "   Set it with: export ANTHROPIC_API_KEY='your-key-here'"
     exit 1
 fi
 
-# Check if config file exists
-if [ ! -f "config/turret_config.json" ]; then
-    echo "⚠️  Warning: config/turret_config.json not found"
-    echo "   Using default configuration"
-    echo ""
-fi
+# Start pigpio daemon
+echo "Starting pigpio daemon..."
+sudo pigpiod
+sleep 1
 
-# Check if Python script exists
-if [ ! -f "src/python/yolo_detector.py" ]; then
-    echo "⚠️  Warning: src/python/yolo_detector.py not found"
-    echo "   Option 3 (YOLO detection) will not work"
-    echo ""
-fi
+# Start detection service in background
+echo "Starting YOLO detection service..."
+venv/bin/python src/python/detection_service.py --fps 10 &
+YOLO_PID=$!
 
-# Activate Python virtual environment if it exists
-if [ -d "venv" ]; then
-    echo "🐍 Activating Python virtual environment..."
-    source venv/bin/activate
-    echo "✅ Virtual environment activated"
-    echo ""
-fi
+sleep 2  # Let detector initialize
 
-# Run the program from new location
-echo "🚀 Starting Orthanc turret control system..."
-echo ""
-./bin/orthanc "$@"
+# Start tracking system
+echo "Starting AI tracking agent..."
+./build/orthanc_tracker
 
-# Cleanup message
-echo ""
-echo "✅ Launcher exited cleanly"
+# Cleanup on exit
+kill $YOLO_PID 2>/dev/null || true
+sudo killall pigpiod 2>/dev/null || true
+
+echo "✅ Shutdown complete"

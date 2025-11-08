@@ -82,5 +82,3 @@ int main(){
 
     return 0;
 }
-
-// Compile: g++ -o test_pan_tilt test_pan_tilt_servo.cpp ../../src/cpp/Turret.cpp ../../src/cpp/ServoController.cpp ../../src/cpp/SignalGenerator.cpp -lpigpiod_if2 -std=c++20 -O2
