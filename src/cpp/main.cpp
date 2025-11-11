@@ -33,6 +33,37 @@ struct Detection {
     long timestamp_ms;
 };
 
+// Add after finding target_person (around line 220)
+struct MotionPredictor {
+    Detection last_position;
+    long last_timestamp;
+    double velocity_x = 0.0;
+    double velocity_y = 0.0;
+    bool initialized = false;
+    
+    void update(const Detection& current) {
+        if (initialized) {
+            double dt = (current.timestamp_ms - last_timestamp) / 1000.0;
+            if (dt > 0 && dt < 0.5) {  // Sanity check
+                velocity_x = (current.x - last_position.x) / dt;
+                velocity_y = (current.y - last_position.y) / dt;
+            }
+        }
+        last_position = current;
+        last_timestamp = current.timestamp_ms;
+        initialized = true;
+    }
+    
+    Detection predict(double lookahead_ms) {
+        Detection predicted = last_position;
+        double dt = lookahead_ms / 1000.0;
+        predicted.x = std::clamp(last_position.x + velocity_x * dt, 0.0, 1.0);
+        predicted.y = std::clamp(last_position.y + velocity_y * dt, 0.0, 1.0);
+        return predicted;
+    }
+};
+
+
 // CURL callback for API responses
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
@@ -212,6 +243,7 @@ void trackingLoop(Turret& turret, const std::string& api_key) {
     int frames_without_person = 0;
     const int memory_frames = 60; // Remember for 60 frames (~3 sec at 20Hz) - DOUBLED!
     std::string last_ai_decision = "Starting patrol";
+    static MotionPredictor motion_predictor;  
     
     while (tracking_active) {
         auto cycle_start = std::chrono::steady_clock::now();
@@ -278,11 +310,24 @@ void trackingLoop(Turret& turret, const std::string& api_key) {
         
         // Update memory
         if (target_person) {
-            last_known_person = *target_person;
+            motion_predictor.update(*target_person);
+            last_known_person = *target_person; 
+
+            // Use PREDICTED position for control (200ms lookahead)
+            Detection predicted = motion_predictor.predict(200.0);
+            target_person = &predicted;  // Override with prediction
+
             frames_without_person = 0;
             tracking_person = true;
         } else {
             frames_without_person++;
+
+            // Shorter memory at edge limits to avoid getting stuck
+            int effective_memory = memory_frames;
+            if (current_pan >= 170.0 || current_pan <= 10.0) {
+                effective_memory = memory_frames / 4;  // Less than 1 second at edges
+            }
+
             // Use memory if we recently saw a person
             if (frames_without_person < memory_frames) {
                 target_person = &last_known_person;
@@ -298,34 +343,64 @@ void trackingLoop(Turret& turret, const std::string& api_key) {
         
         if (tracking_person && target_person) {
             // FAST PROPORTIONAL CONTROL - no API call needed!
-            tracking_person = true;
+            //tracking_person = true;
             action = "track";
             
             // Calculate error from center (0.5, 0.5)
             double x_error = target_person->x - 0.5;  // Positive = right
             double y_error = target_person->y - 0.5;  // Positive = down
+
+             // *** NEW: Check if stuck at limits with target at edge ***
+            bool stuck_at_right = (current_pan >= 175.0 && x_error > 0.2);
+            bool stuck_at_left = (current_pan <= 5.0 && x_error < -0.2);
+            bool target_lost_at_edge = stuck_at_right || stuck_at_left;
+
+            if (target_lost_at_edge && frames_without_person > 0) {
+                // Target walked out of frame - expire memory immediately
+                frames_without_person = memory_frames;
+                tracking_person = false;
+        
+                std::cout << "⚠️  Target lost at edge boundary! "
+                  << (stuck_at_right ? "RIGHT" : "LEFT") 
+                  << " - switching to scan mode\n";
+
+                // Force immediate scan in opposite direction
+                if (stuck_at_right) {
+                    pan_adj = -40.0;  // Scan left aggressively
+                } else {
+                    pan_adj = 40.0;   // Scan right aggressively
+                }
+                tilt_adj = 0.0;
             
-            // Smooth proportional gain with damping
-            const double pan_gain = 40.0;  // Reduced from 100 for smoother tracking
-            const double tilt_gain = 30.0;  // Reduced from 80
+            }
+            else {
             
-            // Add deadband - don't move if error is tiny
-            if (std::abs(x_error) < 0.05) x_error = 0;
-            if (std::abs(y_error) < 0.05) y_error = 0;
-            
-            pan_adj = x_error * pan_gain;
-            tilt_adj = -y_error * tilt_gain;  // Negative because Y+ is down but tilt+ is up
-            
-            // Tighter clamps for smoother motion
-            pan_adj = std::clamp(pan_adj, -25.0, 25.0);
-            tilt_adj = std::clamp(tilt_adj, -25.0, 25.0);
-            
-            // Print every 10 cycles to reduce spam
-            if (cycle_count % 10 == 0) {
-                std::string status = (frames_without_person > 0) ? " [MEMORY]" : "";
-                std::cout << "🎯 Tracking" << status << ": Pan=" << current_pan << "° Tilt=" << current_tilt 
-                          << "° | Person@(" << target_person->x << "," << target_person->y 
-                          << ") | Adjust: Δ" << pan_adj << "°,Δ" << tilt_adj << "°\n";
+                // Smooth proportional gain with damping
+                const double pan_gain = 40.0;  // Reduced from 100 for smoother tracking
+                const double tilt_gain = 30.0;  // Reduced from 80
+                
+                // Add deadband - don't move if error is tiny
+                if (std::abs(x_error) < 0.05) x_error = 0;
+                if (std::abs(y_error) < 0.05) y_error = 0;
+                
+                pan_adj = x_error * pan_gain;
+                tilt_adj = -y_error * tilt_gain;  // Negative because Y+ is down but tilt+ is up
+                
+                // Tighter clamps for smoother motion
+                pan_adj = std::clamp(pan_adj, -25.0, 25.0);
+                tilt_adj = std::clamp(tilt_adj, -25.0, 25.0);
+                
+                // Print every 10 cycles to reduce spam
+                if (cycle_count % 10 == 0) {
+                    long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    long detection_age_ms = now_ms - target_person->timestamp_ms;
+
+                    std::string status = (frames_without_person > 0) ? " [MEMORY]" : "";
+                    std::cout << "🎯 Tracking" << status << ": Pan=" << current_pan << "° Tilt=" << current_tilt 
+                            << "° | Person@(" << target_person->x << "," << target_person->y 
+                            << ") | Adjust: Δ" << pan_adj << "°,Δ" << tilt_adj << "°\n";
+                }
             }
             
         } else {
@@ -366,12 +441,16 @@ void trackingLoop(Turret& turret, const std::string& api_key) {
                     }
                 } else {
                     // Memory expired - do simple back-and-forth scan
-                    if (current_pan <= 30) {
-                        pan_adj = 30.0;  // Scan right
-                    } else if (current_pan >= 150) {
-                        pan_adj = -30.0;  // Scan left
+                    if (current_pan >= 175.0) {
+                        pan_adj = -50.0;  // Scan left
+                    } else if (current_pan <= 5.0) {
+                        pan_adj = 50.0;  // Scan left
+                    } else if (current_pan < 60.0) {
+                        pan_adj = 50.0;
+                    } else if (current_pan > 120.0) {
+                        pan_adj = -50.0;
                     } else {
-                        pan_adj = (current_pan < 90) ? 30.0 : -30.0;
+                        pan_adj = (last_known_person.x > 0.5) ? 50.0 : -50.0;
                     }
                     
                     if (cycle_count % 20 == 0) {
