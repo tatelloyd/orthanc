@@ -26,6 +26,9 @@ fov_calibration_output/
 *.swp
 *~
 
+external/
+build/
+
 # DS
 
 # Config (if contains sensitive data)

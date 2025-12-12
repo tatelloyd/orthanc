@@ -7,6 +7,8 @@ Detects objects and prints them to the screen
 import cv2
 import sys
 import time
+import json
+import fcntl
 from ultralytics import YOLO
 
 def main():
@@ -35,8 +37,8 @@ def main():
     print(f"✅ Camera opened: {width}x{height}\n")
     
     # Detection settings
-    detection_duration = 10.0  # Run for 10 seconds
-    target_fps = 5  # Check for objects 5 times per second
+    detection_duration = 1000.0  # Run for 10 seconds
+    target_fps = 10  # Check for objects 5 times per second
     frame_delay = 1.0 / target_fps
     
     print(f"🎯 Running detection at {target_fps} Hz for {detection_duration}s")
@@ -67,7 +69,7 @@ def main():
             frame = cv2.flip(frame, -1)  # -1 flips both horizontal and vertical
             
             # Run YOLO detection
-            results = model(frame, verbose=False)
+            results = model(frame, verbose=False, conf=0.35, imgsz=320)
             
             # Process and print detections
             detections = []
@@ -85,9 +87,9 @@ def main():
                     
                     detections.append({
                         'label': label,
-                        'confidence': conf,
-                        'x': center_x,
-                        'y': center_y
+                        'confidence': float(conf),
+                        'x': float(center_x),
+                        'y': float(center_y)
                     })
             
             # Print results
@@ -102,6 +104,21 @@ def main():
                           f"position: x={det['x']:.2f}, y={det['y']:.2f})")
             else:
                 print(f"[{elapsed:.1f}s] Frame {frame_count}: No objects detected")
+
+            # After processing detections, before writing JSON:
+            detection_data = {
+            'timestamp': time.time(),
+            'detections': detections
+            }
+
+            try:
+                with open('detections.json', 'w') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    json.dump(detections, f)
+                    f.flush()  # Force write to disk
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Unlock
+            except Exception as e:
+                print(f"⚠️  Failed to write JSON: {e}")
     
     except KeyboardInterrupt:
         print("\n\n🛑 Detection stopped by user")

@@ -55,11 +55,11 @@ class DetectionService:
         # Mid region (0.3-0.4): require 0.5 confidence  
         # Edge region (dist > 0.4): accept 0.45 confidence
         if dist_from_center < 0.3:
-            return conf > 0.6
-        elif dist_from_center < 0.4:
-            return conf > 0.5
-        else:
             return conf > 0.45
+        elif dist_from_center < 0.4:
+            return conf > 0.40
+        else:
+            return conf > 0.35
     
     def detect_frame(self):
         """Capture and process one frame"""

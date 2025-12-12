@@ -1,0 +1,12 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="BasicTracking">
+    <Fallback>
+      <Sequence name="ActiveTracking">
+        <HasPersonDetection/>
+        <ProportionalTrack/>
+      </Sequence>
+
+      <SimpleScan/>
+    </Fallback>
+  </BehaviorTree>
+</root>
