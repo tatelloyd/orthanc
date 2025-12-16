@@ -12,7 +12,6 @@
 
 using json = nlohmann::json;
 
-// Shared state for nodes
 struct TrackerState {
     std::string detection_file = "detections.json";
     std::vector<json> current_detections;
@@ -21,16 +20,13 @@ struct TrackerState {
     double smoothed_x = 0.5;
     double smoothed_y = 0.5;
 
-    // Loss recovery
     int frames_since_detection = 0;
     std::chrono::steady_clock::time_point last_detection_time;
     const double loss_timeout_seconds = 2.0;
 
-    // Tracking state
     int consecutive_centered_frames = 0;
     const int frames_needed_to_lock = 5;
     
-    // Recovery mode
     bool in_recovery_mode = false;
     double last_known_x = 0.5;
     double last_known_y = 0.5;
@@ -43,7 +39,6 @@ struct TrackerState {
     }
 };
 
-// Condition: Check if we have a person in detections
 class HasPersonDetection : public BT::ConditionNode {
 public:
     HasPersonDetection(const std::string& name) 
@@ -79,7 +74,6 @@ public:
             flock(fd, LOCK_UN);
             close(fd);
 
-            // Check timestamp
             if (data.contains("timestamp")) {
                 double timestamp = data["timestamp"];
                 auto now = std::chrono::system_clock::now();
@@ -106,7 +100,6 @@ public:
                 return BT::NodeStatus::FAILURE;
             }
             
-            // Find person closest to center
             double best_dist = 999.0;
             for (const auto& det : detections_array) {
                 state.current_detections.push_back(det);
@@ -136,13 +129,11 @@ public:
             double x = state.target_person.value("x", 0.0);
             double y = state.target_person.value("y", 0.0);
             
-            // Store last known position for recovery
             state.last_known_x = x;
             state.last_known_y = y;
             state.frames_since_detection = 0;
             state.in_recovery_mode = false;
 
-            // Reset smoothing to actual position
             state.smoothed_x = x;
             state.smoothed_y = y;
             
@@ -150,15 +141,13 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
         
-        // No person found - enter recovery mode
         std::cout << "❌ No person detected (frames lost: " << state.frames_since_detection << ")" << std::endl;
         state.frames_since_detection++;
         
-        // Allow brief recovery period
-        if (state.frames_since_detection <= 5) {
+        if (state.frames_since_detection <= 10) {  // Increased from 3 - hold position longer
             std::cout << "🔄 Recovery mode - holding position" << std::endl;
             state.in_recovery_mode = true;
-            return BT::NodeStatus::SUCCESS;  // Pretend we have person for recovery tracking
+            return BT::NodeStatus::SUCCESS;
         }
         
         return BT::NodeStatus::FAILURE;
@@ -178,7 +167,6 @@ public:
             return BT::NodeStatus::FAILURE;
         }
         
-        // In recovery mode, use last known position
         double target_x, target_y;
         if (state.in_recovery_mode) {
             target_x = state.last_known_x;
@@ -192,16 +180,18 @@ public:
             target_y = state.target_person.value("y", 0.5);
         }
         
-        // Light smoothing
-        const double alpha = 0.4;
+        // MUCH heavier smoothing to compensate for jerky YOLO detections
+        const double alpha = 0.2;  // Reduced from 0.5 for more stability
         state.smoothed_x = alpha * target_x + (1.0 - alpha) * state.smoothed_x;
         state.smoothed_y = alpha * target_y + (1.0 - alpha) * state.smoothed_y;
 
-        // CORRECTED: Remove the negative sign - error should point toward target
-        double x_error = (state.smoothed_x - 0.5);  // Positive = target is right, move right
-        double y_error = -(state.smoothed_y - 0.5);  // Positive = target is down, move down
+        // FIXED: Inverted x-axis
+        // When person is at x=0.9 (right side of frame), we need to pan LEFT (decrease angle)
+        // When person is at x=0.1 (left side of frame), we need to pan RIGHT (increase angle)
+        double x_error = -(state.smoothed_x - 0.5);  // INVERTED
+        double y_error = -(state.smoothed_y - 0.5);  // Inverted for upside-down camera
 
-        const double deadband = 0.025;
+        const double deadband = 0.08;  // Much larger to avoid oscillation
         
         bool is_centered = (std::abs(x_error) < deadband && std::abs(y_error) < deadband);
         
@@ -215,7 +205,6 @@ public:
             state.consecutive_centered_frames = 0;
         }
 
-        // Apply deadband
         if (std::abs(x_error) < deadband) x_error = 0;
         if (std::abs(y_error) < deadband) y_error = 0;
 
@@ -223,12 +212,16 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
 
-        // REDUCED gains for smoother tracking
-        double pan_gain = std::abs(x_error) > 0.15 ? 15.0 : 8.0;   // Reduced from 20/10
-        double tilt_gain = std::abs(y_error) > 0.15 ? 15.0 : 8.0;
+        // Much gentler gains to prevent overcorrection
+        double pan_gain = std::abs(x_error) > 0.2 ? 20.0 :   // Halved from 40
+                         (std::abs(x_error) > 0.1 ? 10.0 :   // Halved from 20
+                          5.0);                               // Halved from 10
+        double tilt_gain = std::abs(y_error) > 0.2 ? 20.0 : 
+                          (std::abs(y_error) > 0.1 ? 10.0 : 
+                           5.0);
         
-        double pan_adj = std::clamp(x_error * pan_gain, -10.0, 10.0);   // Reduced max from 15
-        double tilt_adj = std::clamp(y_error * tilt_gain, -10.0, 10.0);
+        double pan_adj = std::clamp(x_error * pan_gain, -8.0, 8.0);   // Reduced from 15
+        double tilt_adj = std::clamp(y_error * tilt_gain, -8.0, 8.0); // Reduced from 15
 
         double current_pan = state.turret->getPanAngle();
         double current_tilt = state.turret->getTiltAngle();
@@ -237,27 +230,26 @@ public:
         double new_tilt = std::clamp(current_tilt + tilt_adj, 10.0, 170.0);
 
         if (new_pan <= 10.0 || new_pan >= 170.0) {
-            std::cout << "⚠️  Pan servo at limit!\n";
+            std::cout << "⚠️  Pan servo at limit! Person may be out of range.\n";
         }
 
         state.turret->setPanAngle(new_pan);
         state.turret->setTiltAngle(new_tilt);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // Slower updates for stability
         
-        std::cout << "🎯 Track: err(" << x_error << ", " << y_error << ") "
-                  << "→ pan " << current_pan << "→" << new_pan << "°"
-                  << " | tilt " << current_tilt << "→" << new_tilt << "°\n";
+        std::cout << "🎯 Track: target(" << target_x << ", " << target_y << ") "
+                  << "err(" << x_error << ", " << y_error << ") "
+                  << "→ pan " << current_pan << "→" << new_pan << "°\n";
         
         return BT::NodeStatus::SUCCESS;
     }    
 };
 
-// Action: Gentle scanning when target is lost
 class SimpleScanAction : public BT::SyncActionNode {
 private:
     std::chrono::steady_clock::time_point last_move_time;
-    double move_interval_sec = 1.5;  // Slower scanning
+    double move_interval_sec = 2.0;
     bool scanning_right = true; 
 public:
     SimpleScanAction(const std::string& name)
@@ -284,19 +276,18 @@ public:
         double current_pan = state.turret->getPanAngle();
         double pan_adj = 0.0;
         
-        // Gentler scanning - smaller steps
-        if (current_pan >= 160.0) {
+        if (current_pan >= 150.0) {
             scanning_right = false;
-        } else if (current_pan <= 20.0) {
+        } else if (current_pan <= 30.0) {
             scanning_right = true;
         } 
         
         if (scanning_right) {
-            pan_adj = 10.0;  // Reduced from 20
-            std::cout << "🔍 SCAN: → right (+10°)" << std::endl;
+            pan_adj = 15.0;
+            std::cout << "🔍 SCAN: → right (+15°)" << std::endl;
         } else {
-            pan_adj = -10.0;
-            std::cout << "🔍 SCAN: ← left (-10°)" << std::endl;
+            pan_adj = -15.0;
+            std::cout << "🔍 SCAN: ← left (-15°)" << std::endl;
         }
         
         double new_pan = std::clamp(current_pan + pan_adj, 10.0, 170.0);

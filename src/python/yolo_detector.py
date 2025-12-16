@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO Object Detection - Simple Test Mode
-Detects objects and prints them to the screen
+YOLO Object Detection - Continuous Mode with Improved Reliability
 """
 
 import cv2
@@ -12,8 +11,7 @@ import fcntl
 from ultralytics import YOLO
 
 def main():
-    print("\n=== YOLO Detection Test Mode ===")
-    print("Detecting objects for 10 seconds...\n")
+    print("\n=== YOLO Detection Service ===")
     
     # Load YOLO model
     print("Loading YOLOv8n model...")
@@ -32,24 +30,31 @@ def main():
         print("❌ Cannot open camera")
         return 1
     
+    # Set camera to lower resolution for faster processing
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"✅ Camera opened: {width}x{height}\n")
     
     # Detection settings
-    detection_duration = 1000.0  # Run for 10 seconds
-    target_fps = 10  # Check for objects 5 times per second
+    target_fps = 10
     frame_delay = 1.0 / target_fps
     
-    print(f"🎯 Running detection at {target_fps} Hz for {detection_duration}s")
+    print(f"🎯 Detection service running...")
     print("=" * 60)
     
     start_time = time.time()
     last_detection_time = start_time
     frame_count = 0
     
+    # Temporal smoothing - remember last few detections
+    last_person_position = None
+    frames_since_person = 0
+    
     try:
-        while time.time() - start_time < detection_duration:
+        while True:
             current_time = time.time()
             
             # Throttle detection rate
@@ -66,57 +71,84 @@ def main():
                 continue
             
             # FLIP IMAGE since camera is mounted upside down
-            frame = cv2.flip(frame, -1)  # -1 flips both horizontal and vertical
+            frame = cv2.flip(frame, -1)
             
-            # Run YOLO detection
-            results = model(frame, verbose=False, conf=0.35, imgsz=320)
+            # Run YOLO detection with LOWER confidence threshold for better detection
+            results = model(frame, verbose=False, conf=0.25, imgsz=320)  # Lowered from 0.35
             
-            # Process and print detections
+            # Process detections
             detections = []
+            person_found = False
+            
             for box in results[0].boxes:
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
                 label = model.names[cls]
                 
-                # Only include high-confidence detections
-                if conf > 0.5:
-                    # Get bounding box center
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    center_x = ((x1 + x2) / 2) / width
-                    center_y = ((y1 + y2) / 2) / height
-                    
-                    detections.append({
-                        'label': label,
-                        'confidence': float(conf),
-                        'x': float(center_x),
-                        'y': float(center_y)
-                    })
+                # Get bounding box center
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                center_x = ((x1 + x2) / 2) / width
+                center_y = ((y1 + y2) / 2) / height
+                
+                detection = {
+                    'label': label,
+                    'confidence': float(conf),
+                    'x': float(center_x),
+                    'y': float(center_y)
+                }
+                
+                detections.append(detection)
+                
+                if label == 'person':
+                    person_found = True
+                    last_person_position = {'x': center_x, 'y': center_y}
+                    frames_since_person = 0
             
-            # Print results
+            # If no person found but we had one recently, use interpolation
+            if not person_found and last_person_position and frames_since_person < 5:
+                # Add the last known position with a flag
+                detections.append({
+                    'label': 'person',
+                    'confidence': 0.4,  # Lower confidence to indicate interpolation
+                    'x': last_person_position['x'],
+                    'y': last_person_position['y'],
+                    'interpolated': True
+                })
+                person_found = True
+                frames_since_person += 1
+            elif not person_found:
+                frames_since_person += 1
+            
+            # Print compact summary
             frame_count += 1
             elapsed = time.time() - start_time
             
-            if detections:
-                print(f"[{elapsed:.1f}s] Frame {frame_count}: Found {len(detections)} object(s)")
-                for det in detections:
-                    print(f"  → {det['label']} "
-                          f"(confidence: {det['confidence']:.2f}, "
-                          f"position: x={det['x']:.2f}, y={det['y']:.2f})")
+            person_count = sum(1 for d in detections if d['label'] == 'person')
+            other_count = len(detections) - person_count
+            
+            if person_count > 0:
+                status = f"👤 {person_count} person(s)"
+                if other_count > 0:
+                    status += f" + {other_count} other"
+            elif other_count > 0:
+                status = f"{other_count} objects (no people)"
             else:
-                print(f"[{elapsed:.1f}s] Frame {frame_count}: No objects detected")
-
-            # After processing detections, before writing JSON:
+                status = "0 objects (no people)"
+            
+            print(f"[{elapsed:6.1f}s] Frame {frame_count:4d}: {status}")
+            
+            # Write to JSON
             detection_data = {
-            'timestamp': time.time(),
-            'detections': detections
+                'timestamp': time.time(),
+                'detections': detections
             }
-
+            
             try:
                 with open('detections.json', 'w') as f:
                     fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                    json.dump(detections, f)
-                    f.flush()  # Force write to disk
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Unlock
+                    json.dump(detection_data, f)
+                    f.flush()
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
             except Exception as e:
                 print(f"⚠️  Failed to write JSON: {e}")
     
@@ -126,7 +158,7 @@ def main():
         cap.release()
     
     print("\n" + "=" * 60)
-    print(f"✅ Detection test completed! Processed {frame_count} frames")
+    print(f"✅ Detection service completed! Processed {frame_count} frames")
     print()
     
     return 0
