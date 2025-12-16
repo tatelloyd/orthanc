@@ -24,12 +24,16 @@ struct TrackerState {
     // Loss recovery
     int frames_since_detection = 0;
     std::chrono::steady_clock::time_point last_detection_time;
-    const double loss_timeout_seconds = 2.0;  // Wait 2s before giving up
+    const double loss_timeout_seconds = 2.0;
 
     // Tracking state
     int consecutive_centered_frames = 0;
-    const int frames_needed_to_lock = 5;  // 0.5s at 10Hz
+    const int frames_needed_to_lock = 5;
     
+    // Recovery mode
+    bool in_recovery_mode = false;
+    double last_known_x = 0.5;
+    double last_known_y = 0.5;
 
     Turret* turret = nullptr;
     
@@ -39,7 +43,7 @@ struct TrackerState {
     }
 };
 
-// Condition: Check if we have a person in detections OR recently had one
+// Condition: Check if we have a person in detections
 class HasPersonDetection : public BT::ConditionNode {
 public:
     HasPersonDetection(const std::string& name) 
@@ -52,7 +56,6 @@ public:
 
         std::cout << "🔍 Reading: " << state.detection_file << std::endl;
         
-        // Open with file descriptor for locking
         int fd = open(state.detection_file.c_str(), O_RDONLY);
         if (fd < 0) {
             std::cout << "⚠️  Cannot open " << state.detection_file << std::endl;
@@ -60,7 +63,6 @@ public:
             return BT::NodeStatus::FAILURE;
         }
         
-        // Acquire shared lock
         if (flock(fd, LOCK_SH) != 0) {
             close(fd);
             std::cout << "⚠️  Cannot lock file" << std::endl;
@@ -94,7 +96,6 @@ public:
                 std::cout << "   Detection age: " << (age * 1000) << "ms" << std::endl;
             }
             
-            // Get detections array
             json detections_array = data.contains("detections") ? 
                                    data["detections"] : data;
             
@@ -102,7 +103,6 @@ public:
             
             if (!detections_array.is_array()) {
                 std::cout << "   Not an array!" << std::endl;
-                //state.frames_since_detection++;
                 return BT::NodeStatus::FAILURE;
             }
             
@@ -136,13 +136,13 @@ public:
             double x = state.target_person.value("x", 0.0);
             double y = state.target_person.value("y", 0.0);
             
-            // Update last known position
-            //state.last_known_x = x;
-            //state.last_known_y = y;
-            //state.last_detection_time = std::chrono::steady_clock::now();
-            //state.frames_since_detection = 0;
+            // Store last known position for recovery
+            state.last_known_x = x;
+            state.last_known_y = y;
+            state.frames_since_detection = 0;
+            state.in_recovery_mode = false;
 
-            // Reset smoothing to actual position (crucial!)
+            // Reset smoothing to actual position
             state.smoothed_x = x;
             state.smoothed_y = y;
             
@@ -150,11 +150,18 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
         
-        // No person found in current frame
-        std::cout << "❌ No person detected" << std::endl;
+        // No person found - enter recovery mode
+        std::cout << "❌ No person detected (frames lost: " << state.frames_since_detection << ")" << std::endl;
         state.frames_since_detection++;
+        
+        // Allow brief recovery period
+        if (state.frames_since_detection <= 5) {
+            std::cout << "🔄 Recovery mode - holding position" << std::endl;
+            state.in_recovery_mode = true;
+            return BT::NodeStatus::SUCCESS;  // Pretend we have person for recovery tracking
+        }
+        
         return BT::NodeStatus::FAILURE;
-        //return checkLossRecovery();
     }
 };
 
@@ -166,31 +173,41 @@ public:
     BT::NodeStatus tick() override {
         auto& state = TrackerState::get();
         
-        if (!state.has_person || !state.turret) {
-            std::cout << "⚠️  No target to track" << std::endl;
+        if (!state.turret) {
+            std::cout << "⚠️  No turret available" << std::endl;
             return BT::NodeStatus::FAILURE;
         }
         
-        // Light smoothing - only apply to REAL detections
-        double x = state.target_person.value("x", 0.5);
-        double y = state.target_person.value("y", 0.5);
+        // In recovery mode, use last known position
+        double target_x, target_y;
+        if (state.in_recovery_mode) {
+            target_x = state.last_known_x;
+            target_y = state.last_known_y;
+            std::cout << "🔄 Using last known position: (" << target_x << ", " << target_y << ")" << std::endl;
+        } else if (!state.has_person) {
+            std::cout << "⚠️  No target to track" << std::endl;
+            return BT::NodeStatus::FAILURE;
+        } else {
+            target_x = state.target_person.value("x", 0.5);
+            target_y = state.target_person.value("y", 0.5);
+        }
         
-        const double alpha = 0.4;  // More responsive
-        state.smoothed_x = alpha * x + (1.0 - alpha) * state.smoothed_x;
-        state.smoothed_y = alpha * y + (1.0 - alpha) * state.smoothed_y;
+        // Light smoothing
+        const double alpha = 0.4;
+        state.smoothed_x = alpha * target_x + (1.0 - alpha) * state.smoothed_x;
+        state.smoothed_y = alpha * target_y + (1.0 - alpha) * state.smoothed_y;
 
-        double x_error = -(state.smoothed_x - 0.5);  // Flip for servo direction
-        double y_error = -(state.smoothed_y - 0.5);
+        // CORRECTED: Remove the negative sign - error should point toward target
+        double x_error = (state.smoothed_x - 0.5);  // Positive = target is right, move right
+        double y_error = -(state.smoothed_y - 0.5);  // Positive = target is down, move down
 
-        // Small, consistent deadband
-        const double deadband = 0.025;  // 2.5%
+        const double deadband = 0.025;
         
-        // Check if centered BEFORE applying deadband
         bool is_centered = (std::abs(x_error) < deadband && std::abs(y_error) < deadband);
         
-        if (is_centered) {
+        if (is_centered && !state.in_recovery_mode) {
             state.consecutive_centered_frames++;
-            if (state.consecutive_centered_frames >= 5) {  // Reduced from 10
+            if (state.consecutive_centered_frames >= state.frames_needed_to_lock) {
                 std::cout << "🔒 CENTERED (hold " << state.consecutive_centered_frames << " frames)\n";
                 return BT::NodeStatus::SUCCESS;
             }
@@ -198,21 +215,20 @@ public:
             state.consecutive_centered_frames = 0;
         }
 
-        // Apply deadband to prevent tiny jitters
+        // Apply deadband
         if (std::abs(x_error) < deadband) x_error = 0;
         if (std::abs(y_error) < deadband) y_error = 0;
 
-        // If no movement needed, we're done
         if (x_error == 0 && y_error == 0) {
             return BT::NodeStatus::SUCCESS;
         }
 
-        // Adaptive gains - faster for large errors
-        double pan_gain = std::abs(x_error) > 0.1 ? 20.0 : 10.0;
-        double tilt_gain = std::abs(y_error) > 0.1 ? 20.0 : 10.0;
+        // REDUCED gains for smoother tracking
+        double pan_gain = std::abs(x_error) > 0.15 ? 15.0 : 8.0;   // Reduced from 20/10
+        double tilt_gain = std::abs(y_error) > 0.15 ? 15.0 : 8.0;
         
-        double pan_adj = std::clamp(x_error * pan_gain, -15.0, 15.0);
-        double tilt_adj = std::clamp(y_error * tilt_gain, -15.0, 15.0);
+        double pan_adj = std::clamp(x_error * pan_gain, -10.0, 10.0);   // Reduced max from 15
+        double tilt_adj = std::clamp(y_error * tilt_gain, -10.0, 10.0);
 
         double current_pan = state.turret->getPanAngle();
         double current_tilt = state.turret->getTiltAngle();
@@ -227,21 +243,21 @@ public:
         state.turret->setPanAngle(new_pan);
         state.turret->setTiltAngle(new_tilt);
 
-        // REDUCED sleep - 10Hz detection means 100ms updates available
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         std::cout << "🎯 Track: err(" << x_error << ", " << y_error << ") "
-                  << "→ pan " << current_pan << "→" << new_pan << "°\n";
+                  << "→ pan " << current_pan << "→" << new_pan << "°"
+                  << " | tilt " << current_tilt << "→" << new_tilt << "°\n";
         
         return BT::NodeStatus::SUCCESS;
     }    
 };
 
-// Action: Simple scanning pattern when no target
+// Action: Gentle scanning when target is lost
 class SimpleScanAction : public BT::SyncActionNode {
 private:
     std::chrono::steady_clock::time_point last_move_time;
-    double move_interval_sec = 1.0; 
+    double move_interval_sec = 1.5;  // Slower scanning
     bool scanning_right = true; 
 public:
     SimpleScanAction(const std::string& name)
@@ -256,7 +272,6 @@ public:
             return BT::NodeStatus::FAILURE;
         }
 
-        // Check if enough time has passed
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - last_move_time).count();
         
@@ -264,33 +279,30 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
         
-        // Time to move
         last_move_time = now;
         
         double current_pan = state.turret->getPanAngle();
         double pan_adj = 0.0;
         
-        // Simple back-and-forth scan
-        if (current_pan >= 170.0) {
+        // Gentler scanning - smaller steps
+        if (current_pan >= 160.0) {
             scanning_right = false;
-        } else if (current_pan <= 10.0) {
+        } else if (current_pan <= 20.0) {
             scanning_right = true;
         } 
         
         if (scanning_right) {
-            pan_adj = 20.0;
-            std::cout << "🔍 SCAN: → right" << std::endl;
+            pan_adj = 10.0;  // Reduced from 20
+            std::cout << "🔍 SCAN: → right (+10°)" << std::endl;
         } else {
-            pan_adj = -20.0;
-            std::cout << "🔍 SCAN: ← left" << std::endl;
+            pan_adj = -10.0;
+            std::cout << "🔍 SCAN: ← left (-10°)" << std::endl;
         }
         
         double new_pan = std::clamp(current_pan + pan_adj, 10.0, 170.0);
         state.turret->setPanAngle(new_pan);
         
-        //std::cout << "         Pan: " << current_pan << "° → " << new_pan << "°" << std::endl;
-        
-        std::cout << new_pan << "°)" << std::endl;
+        std::cout << "         Pan: " << current_pan << "° → " << new_pan << "°" << std::endl;
 
         return BT::NodeStatus::SUCCESS;
     }
