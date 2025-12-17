@@ -178,6 +178,18 @@ public:
         } else {
             target_x = state.target_person.value("x", 0.5);
             target_y = state.target_person.value("y", 0.5);
+            
+            // CRITICAL: Reject detections that jump too far (servo lag artifact)
+            double jump_dist = std::sqrt(
+                std::pow(target_x - state.smoothed_x, 2) + 
+                std::pow(target_y - state.smoothed_y, 2)
+            );
+            
+            if (jump_dist > 0.3) {  // If detection jumps >30% of frame
+                std::cout << "⚠️  Detection jump too large (" << jump_dist << "), using smoothed position" << std::endl;
+                target_x = state.smoothed_x;
+                target_y = state.smoothed_y;
+            }
         }
         
         // MUCH heavier smoothing to compensate for jerky YOLO detections
@@ -212,16 +224,17 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
 
-        // Much gentler gains to prevent overcorrection
-        double pan_gain = std::abs(x_error) > 0.2 ? 20.0 :   // Halved from 40
-                         (std::abs(x_error) > 0.1 ? 10.0 :   // Halved from 20
-                          5.0);                               // Halved from 10
-        double tilt_gain = std::abs(y_error) > 0.2 ? 20.0 : 
-                          (std::abs(y_error) > 0.1 ? 10.0 : 
-                           5.0);
+        // Even gentler gains to prevent overcorrection
+        // Use VERY small gains since we're waiting longer for servos
+        double pan_gain = std::abs(x_error) > 0.2 ? 12.0 :   // Reduced from 15
+                         (std::abs(x_error) > 0.1 ? 6.0 :    // Reduced from 8
+                          3.0);                               // Reduced from 4
+        double tilt_gain = std::abs(y_error) > 0.2 ? 12.0 : 
+                          (std::abs(y_error) > 0.1 ? 6.0 : 
+                           3.0);
         
-        double pan_adj = std::clamp(x_error * pan_gain, -8.0, 8.0);   // Reduced from 15
-        double tilt_adj = std::clamp(y_error * tilt_gain, -8.0, 8.0); // Reduced from 15
+        double pan_adj = std::clamp(x_error * pan_gain, -4.0, 4.0);   // Even smaller max step
+        double tilt_adj = std::clamp(y_error * tilt_gain, -4.0, 4.0); // Even smaller max step
 
         double current_pan = state.turret->getPanAngle();
         double current_tilt = state.turret->getTiltAngle();
@@ -236,7 +249,11 @@ public:
         state.turret->setPanAngle(new_pan);
         state.turret->setTiltAngle(new_tilt);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // Slower updates for stability
+        // CRITICAL: Wait for servos to actually reach position before next detection
+        // Scale wait time based on how much we moved - bigger moves need more settling time
+        double total_movement = std::abs(pan_adj) + std::abs(tilt_adj);
+        int wait_ms = std::min(300, static_cast<int>(100 + total_movement * 20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
         
         std::cout << "🎯 Track: target(" << target_x << ", " << target_y << ") "
                   << "err(" << x_error << ", " << y_error << ") "

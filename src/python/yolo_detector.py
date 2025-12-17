@@ -90,6 +90,13 @@ def main():
                 center_x = ((x1 + x2) / 2) / width
                 center_y = ((y1 + y2) / 2) / height
                 
+                # CRITICAL FIX: Reject detections at edges (likely false positives)
+                # Camera is upside down, so y < 0.15 means top of ACTUAL view (person's feet/floor)
+                if center_y < 0.15 or center_y > 0.85:
+                    continue  # Skip edge detections
+                if center_x < 0.05 or center_x > 0.95:
+                    continue  # Skip edge detections
+                
                 detection = {
                     'label': label,
                     'confidence': float(conf),
@@ -103,6 +110,11 @@ def main():
                     person_found = True
                     last_person_position = {'x': center_x, 'y': center_y}
                     frames_since_person = 0
+                    
+                    # Boost confidence for people near center (more likely to be the target)
+                    distance_from_center = ((center_x - 0.5)**2 + (center_y - 0.5)**2)**0.5
+                    if distance_from_center < 0.2:  # Within 20% of center
+                        detection['confidence'] = min(1.0, conf * 1.2)  # Boost confidence
             
             # If no person found but we had one recently, use interpolation
             if not person_found and last_person_position and frames_since_person < 5:
