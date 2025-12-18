@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO Object Detection - Continuous Mode with Improved Reliability
+YOLO Object Detection - Improved Stability and False Positive Rejection
 """
 
 import cv2
@@ -8,10 +8,70 @@ import sys
 import time
 import json
 import fcntl
+from collections import deque
 from ultralytics import YOLO
 
+class StableTracker:
+    """Tracks detections over time to filter out false positives"""
+    def __init__(self, buffer_size=3, position_threshold=0.15):
+        self.detections = deque(maxlen=buffer_size)
+        self.position_threshold = position_threshold
+        
+    def add_detection(self, detection):
+        """Add a detection and return stable position if confident"""
+        self.detections.append(detection)
+        
+        # Need at least 2 recent detections to be confident
+        if len(self.detections) < 2:
+            return None
+            
+        # Check if recent detections are consistent (close together)
+        recent = list(self.detections)
+        avg_x = sum(d['x'] for d in recent) / len(recent)
+        avg_y = sum(d['y'] for d in recent) / len(recent)
+        
+        # Check variance - reject if detections are jumping around
+        max_dist = max(
+            ((d['x'] - avg_x)**2 + (d['y'] - avg_y)**2)**0.5 
+            for d in recent
+        )
+        
+        if max_dist > self.position_threshold:
+            return None  # Too much variance, not stable
+            
+        # Return averaged position
+        return {
+            'label': 'person',
+            'confidence': sum(d['confidence'] for d in recent) / len(recent),
+            'x': avg_x,
+            'y': avg_y,
+            'stable': True
+        }
+    
+    def clear(self):
+        self.detections.clear()
+
+def is_valid_detection(center_x, center_y, conf):
+    """Strict validation for person detections"""
+    
+    # CRITICAL: Much stricter edge rejection
+    # Camera is upside down, so y < 0.2 is actually TOP of real view (ceiling/floor)
+    # Reject anything in top 25% or bottom 25% of frame
+    if center_y < 0.25 or center_y > 0.75:
+        return False
+    
+    # Reject edges on x-axis too
+    if center_x < 0.1 or center_x > 0.9:
+        return False
+    
+    # Require minimum confidence
+    if conf < 0.3:
+        return False
+        
+    return True
+
 def main():
-    print("\n=== YOLO Detection Service ===")
+    print("\n=== YOLO Detection Service (Improved Stability) ===")
     
     # Load YOLO model
     print("Loading YOLOv8n model...")
@@ -42,16 +102,15 @@ def main():
     target_fps = 10
     frame_delay = 1.0 / target_fps
     
+    # Stable tracking
+    tracker = StableTracker(buffer_size=3, position_threshold=0.12)
+    
     print(f"🎯 Detection service running...")
     print("=" * 60)
     
     start_time = time.time()
     last_detection_time = start_time
     frame_count = 0
-    
-    # Temporal smoothing - remember last few detections
-    last_person_position = None
-    frames_since_person = 0
     
     try:
         while True:
@@ -73,12 +132,12 @@ def main():
             # FLIP IMAGE since camera is mounted upside down
             frame = cv2.flip(frame, -1)
             
-            # Run YOLO detection with LOWER confidence threshold for better detection
-            results = model(frame, verbose=False, conf=0.25, imgsz=320)  # Lowered from 0.35
+            # Run YOLO detection with moderate confidence
+            results = model(frame, verbose=False, conf=0.3, imgsz=320)
             
             # Process detections
-            detections = []
-            person_found = False
+            raw_detections = []
+            person_candidates = []
             
             for box in results[0].boxes:
                 cls = int(box.cls[0])
@@ -90,56 +149,59 @@ def main():
                 center_x = ((x1 + x2) / 2) / width
                 center_y = ((y1 + y2) / 2) / height
                 
-                # CRITICAL FIX: Reject detections at edges (likely false positives)
-                # Camera is upside down, so y < 0.15 means top of ACTUAL view (person's feet/floor)
-                if center_y < 0.15 or center_y > 0.85:
-                    continue  # Skip edge detections
-                if center_x < 0.05 or center_x > 0.95:
-                    continue  # Skip edge detections
-                
-                detection = {
-                    'label': label,
-                    'confidence': float(conf),
-                    'x': float(center_x),
-                    'y': float(center_y)
-                }
-                
-                detections.append(detection)
-                
                 if label == 'person':
-                    person_found = True
-                    last_person_position = {'x': center_x, 'y': center_y}
-                    frames_since_person = 0
+                    # Apply strict validation
+                    if not is_valid_detection(center_x, center_y, conf):
+                        print(f"   ⚠️ Rejected person at ({center_x:.3f}, {center_y:.3f}) conf={conf:.2f} - edge/low conf")
+                        continue
                     
-                    # Boost confidence for people near center (more likely to be the target)
-                    distance_from_center = ((center_x - 0.5)**2 + (center_y - 0.5)**2)**0.5
-                    if distance_from_center < 0.2:  # Within 20% of center
-                        detection['confidence'] = min(1.0, conf * 1.2)  # Boost confidence
+                    person_candidates.append({
+                        'label': label,
+                        'confidence': float(conf),
+                        'x': float(center_x),
+                        'y': float(center_y)
+                    })
+                else:
+                    # Track other objects for debugging
+                    raw_detections.append({
+                        'label': label,
+                        'confidence': float(conf),
+                        'x': float(center_x),
+                        'y': float(center_y)
+                    })
             
-            # If no person found but we had one recently, use interpolation
-            if not person_found and last_person_position and frames_since_person < 5:
-                # Add the last known position with a flag
-                detections.append({
-                    'label': 'person',
-                    'confidence': 0.4,  # Lower confidence to indicate interpolation
-                    'x': last_person_position['x'],
-                    'y': last_person_position['y'],
-                    'interpolated': True
-                })
-                person_found = True
-                frames_since_person += 1
-            elif not person_found:
-                frames_since_person += 1
+            # Select best person candidate (closest to center, high confidence)
+            detections = []
+            stable_person = None
+            
+            if person_candidates:
+                # Prefer detections near center of frame
+                best = max(person_candidates, key=lambda d: 
+                    d['confidence'] / (1.0 + ((d['x']-0.5)**2 + (d['y']-0.5)**2))
+                )
+                
+                # Add to tracker for temporal filtering
+                stable_person = tracker.add_detection(best)
+                
+                if stable_person:
+                    detections.append(stable_person)
+                    print(f"   ✅ Stable person at ({stable_person['x']:.3f}, {stable_person['y']:.3f}) conf={stable_person['confidence']:.2f}")
+                else:
+                    # Not stable yet, but still output best candidate
+                    detections.append(best)
+                    print(f"   ⏳ Tracking candidate at ({best['x']:.3f}, {best['y']:.3f}) conf={best['confidence']:.2f}")
+            else:
+                tracker.clear()
             
             # Print compact summary
             frame_count += 1
             elapsed = time.time() - start_time
             
-            person_count = sum(1 for d in detections if d['label'] == 'person')
-            other_count = len(detections) - person_count
+            person_count = len(detections)
+            other_count = len(raw_detections)
             
             if person_count > 0:
-                status = f"👤 {person_count} person(s)"
+                status = f"👤 {person_count} person {'(stable)' if stable_person else '(tracking)'}"
                 if other_count > 0:
                     status += f" + {other_count} other"
             elif other_count > 0:
@@ -152,7 +214,7 @@ def main():
             # Write to JSON
             detection_data = {
                 'timestamp': time.time(),
-                'detections': detections
+                'detections': detections  # Only stable/best person
             }
             
             try:

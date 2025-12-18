@@ -30,6 +30,11 @@ struct TrackerState {
     bool in_recovery_mode = false;
     double last_known_x = 0.5;
     double last_known_y = 0.5;
+    
+    // Reject sudden jumps
+    double prev_x = 0.5;
+    double prev_y = 0.5;
+    const double max_velocity = 0.2;  // Max 20% jump per tick
 
     Turret* turret = nullptr;
     
@@ -74,6 +79,7 @@ public:
             flock(fd, LOCK_UN);
             close(fd);
 
+            // Check timestamp
             if (data.contains("timestamp")) {
                 double timestamp = data["timestamp"];
                 auto now = std::chrono::system_clock::now();
@@ -100,19 +106,48 @@ public:
                 return BT::NodeStatus::FAILURE;
             }
             
-            double best_dist = 999.0;
+            // Find person detections
             for (const auto& det : detections_array) {
                 state.current_detections.push_back(det);
                 
                 if (det.value("label", "") == "person") {
                     double x = det.value("x", 0.5);
                     double y = det.value("y", 0.5);
-                    double dist = std::sqrt(std::pow(x - 0.5, 2) + std::pow(y - 0.5, 2));
+                    double conf = det.value("confidence", 0.0);
                     
-                    if (dist < best_dist) {
-                        best_dist = dist;
+                    // CRITICAL: Sanity check - reject if too far from current position
+                    double distance = std::sqrt(std::pow(x - state.smoothed_x, 2) + 
+                                              std::pow(y - state.smoothed_y, 2));
+                    
+                    // If person was just detected, allow larger jumps initially
+                    double max_allowed_distance = (state.frames_since_detection < 3) ? 0.35 : 0.25;
+                    
+                    if (distance > max_allowed_distance && state.has_person) {
+                        std::cout << "   ⚠️ Rejected detection - too far from current position (dist=" 
+                                  << distance << ")" << std::endl;
+                        continue;
+                    }
+                    
+                    // Prefer stable detections (marked by Python tracker)
+                    bool is_stable = det.value("stable", false);
+                    double score = conf;
+                    if (is_stable) {
+                        score *= 1.5;  // Heavily prefer stable detections
+                    }
+                    
+                    // Calculate velocity
+                    double velocity = std::sqrt(std::pow(x - state.prev_x, 2) + 
+                                                std::pow(y - state.prev_y, 2));
+                    
+                    // Reject if moving too fast (unless first detection)
+                    if (velocity < state.max_velocity || state.frames_since_detection > 5) {
                         state.target_person = det;
                         state.has_person = true;
+                        std::cout << "   ✅ Accepted person" << (is_stable ? " (STABLE)" : "") 
+                                  << " conf=" << conf << " dist=" << distance << std::endl;
+                        break;  // Take first valid detection
+                    } else {
+                        std::cout << "   ⚠️ Rejected detection (velocity=" << velocity << ")" << std::endl;
                     }
                 }
             }
@@ -134,17 +169,22 @@ public:
             state.frames_since_detection = 0;
             state.in_recovery_mode = false;
 
+            // Update velocity tracking
+            state.prev_x = state.smoothed_x;
+            state.prev_y = state.smoothed_y;
+
             state.smoothed_x = x;
             state.smoothed_y = y;
             
-            std::cout << "👤 Person detected at (" << x << ", " << y << ")" << std::endl;
+            std::cout << "👤 Person locked at (" << x << ", " << y << ")" << std::endl;
             return BT::NodeStatus::SUCCESS;
         }
         
-        std::cout << "❌ No person detected (frames lost: " << state.frames_since_detection << ")" << std::endl;
+        std::cout << "❌ No valid person detected (frames lost: " << state.frames_since_detection << ")" << std::endl;
         state.frames_since_detection++;
         
-        if (state.frames_since_detection <= 10) {  // Increased from 3 - hold position longer
+        // Hold position for longer
+        if (state.frames_since_detection <= 15) {
             std::cout << "🔄 Recovery mode - holding position" << std::endl;
             state.in_recovery_mode = true;
             return BT::NodeStatus::SUCCESS;
@@ -178,32 +218,18 @@ public:
         } else {
             target_x = state.target_person.value("x", 0.5);
             target_y = state.target_person.value("y", 0.5);
-            
-            // CRITICAL: Reject detections that jump too far (servo lag artifact)
-            double jump_dist = std::sqrt(
-                std::pow(target_x - state.smoothed_x, 2) + 
-                std::pow(target_y - state.smoothed_y, 2)
-            );
-            
-            if (jump_dist > 0.3) {  // If detection jumps >30% of frame
-                std::cout << "⚠️  Detection jump too large (" << jump_dist << "), using smoothed position" << std::endl;
-                target_x = state.smoothed_x;
-                target_y = state.smoothed_y;
-            }
         }
         
-        // MUCH heavier smoothing to compensate for jerky YOLO detections
-        const double alpha = 0.2;  // Reduced from 0.5 for more stability
+        // Heavy smoothing for stability
+        const double alpha = 0.25;  // Even slower response
         state.smoothed_x = alpha * target_x + (1.0 - alpha) * state.smoothed_x;
         state.smoothed_y = alpha * target_y + (1.0 - alpha) * state.smoothed_y;
 
-        // FIXED: Inverted x-axis
-        // When person is at x=0.9 (right side of frame), we need to pan LEFT (decrease angle)
-        // When person is at x=0.1 (left side of frame), we need to pan RIGHT (increase angle)
-        double x_error = -(state.smoothed_x - 0.5);  // INVERTED
+        // FIXED: Inverted x-axis (person right = pan left)
+        double x_error = -(state.smoothed_x - 0.5);
         double y_error = -(state.smoothed_y - 0.5);  // Inverted for upside-down camera
 
-        const double deadband = 0.08;  // Much larger to avoid oscillation
+        const double deadband = 0.1;  // Large deadband
         
         bool is_centered = (std::abs(x_error) < deadband && std::abs(y_error) < deadband);
         
@@ -224,17 +250,14 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
 
-        // Even gentler gains to prevent overcorrection
-        // Use VERY small gains since we're waiting longer for servos
-        double pan_gain = std::abs(x_error) > 0.2 ? 12.0 :   // Reduced from 15
-                         (std::abs(x_error) > 0.1 ? 6.0 :    // Reduced from 8
-                          3.0);                               // Reduced from 4
-        double tilt_gain = std::abs(y_error) > 0.2 ? 12.0 : 
-                          (std::abs(y_error) > 0.1 ? 6.0 : 
-                           3.0);
+        // Conservative gains
+        double pan_gain = std::abs(x_error) > 0.2 ? 10.0 :
+                         (std::abs(x_error) > 0.1 ? 5.0 : 2.5);
+        double tilt_gain = std::abs(y_error) > 0.2 ? 10.0 : 
+                          (std::abs(y_error) > 0.1 ? 5.0 : 2.5);
         
-        double pan_adj = std::clamp(x_error * pan_gain, -4.0, 4.0);   // Even smaller max step
-        double tilt_adj = std::clamp(y_error * tilt_gain, -4.0, 4.0); // Even smaller max step
+        double pan_adj = std::clamp(x_error * pan_gain, -3.0, 3.0);
+        double tilt_adj = std::clamp(y_error * tilt_gain, -3.0, 3.0);
 
         double current_pan = state.turret->getPanAngle();
         double current_tilt = state.turret->getTiltAngle();
@@ -243,16 +266,15 @@ public:
         double new_tilt = std::clamp(current_tilt + tilt_adj, 10.0, 170.0);
 
         if (new_pan <= 10.0 || new_pan >= 170.0) {
-            std::cout << "⚠️  Pan servo at limit! Person may be out of range.\n";
+            std::cout << "⚠️  Pan servo at limit!\n";
         }
 
         state.turret->setPanAngle(new_pan);
         state.turret->setTiltAngle(new_tilt);
 
-        // CRITICAL: Wait for servos to actually reach position before next detection
-        // Scale wait time based on how much we moved - bigger moves need more settling time
+        // Wait for servos to settle
         double total_movement = std::abs(pan_adj) + std::abs(tilt_adj);
-        int wait_ms = std::min(300, static_cast<int>(100 + total_movement * 20));
+        int wait_ms = std::min(250, static_cast<int>(80 + total_movement * 20));
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
         
         std::cout << "🎯 Track: target(" << target_x << ", " << target_y << ") "
