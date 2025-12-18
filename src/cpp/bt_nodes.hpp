@@ -115,12 +115,19 @@ public:
                     double y = det.value("y", 0.5);
                     double conf = det.value("confidence", 0.0);
                     
-                    // CRITICAL: Sanity check - reject if too far from current position
+                    // CRITICAL: Reject detections too far from center - likely false positives
+                    // Only accept detections in the middle 60% of frame
+                    if (x < 0.2 || x > 0.8 || y < 0.2 || y > 0.8) {
+                        std::cout << "   ⚠️ Rejected detection at edge (" << x << ", " << y << ")" << std::endl;
+                        continue;
+                    }
+                    
+                    // Sanity check - reject if too far from current position (unless just starting)
                     double distance = std::sqrt(std::pow(x - state.smoothed_x, 2) + 
                                               std::pow(y - state.smoothed_y, 2));
                     
                     // If person was just detected, allow larger jumps initially
-                    double max_allowed_distance = (state.frames_since_detection < 3) ? 0.35 : 0.25;
+                    double max_allowed_distance = (state.frames_since_detection < 3) ? 0.35 : 0.20;
                     
                     if (distance > max_allowed_distance && state.has_person) {
                         std::cout << "   ⚠️ Rejected detection - too far from current position (dist=" 
@@ -135,12 +142,12 @@ public:
                         score *= 1.5;  // Heavily prefer stable detections
                     }
                     
-                    // Calculate velocity
+                    // Calculate velocity from previous SMOOTHED position
                     double velocity = std::sqrt(std::pow(x - state.prev_x, 2) + 
                                                 std::pow(y - state.prev_y, 2));
                     
-                    // Reject if moving too fast (unless first detection)
-                    if (velocity < state.max_velocity || state.frames_since_detection > 5) {
+                    // More lenient velocity check - allow reasonable movement
+                    if (velocity < state.max_velocity || state.frames_since_detection > 10) {
                         state.target_person = det;
                         state.has_person = true;
                         std::cout << "   ✅ Accepted person" << (is_stable ? " (STABLE)" : "") 
@@ -183,8 +190,8 @@ public:
         std::cout << "❌ No valid person detected (frames lost: " << state.frames_since_detection << ")" << std::endl;
         state.frames_since_detection++;
         
-        // Hold position for longer
-        if (state.frames_since_detection <= 15) {
+        // Hold position for longer - stop chasing ghosts
+        if (state.frames_since_detection <= 20) {
             std::cout << "🔄 Recovery mode - holding position" << std::endl;
             state.in_recovery_mode = true;
             return BT::NodeStatus::SUCCESS;
@@ -216,12 +223,12 @@ public:
             std::cout << "⚠️  No target to track" << std::endl;
             return BT::NodeStatus::FAILURE;
         } else {
-            target_x = state.target_person.value("x", 0.5);
-            target_y = state.target_person.value("y", 0.5);
+            target_x = state.smoothed_x;  // Use smoothed position
+            target_y = state.smoothed_y;
         }
         
-        // Heavy smoothing for stability
-        const double alpha = 0.25;  // Even slower response
+        // Moderate smoothing - balance stability with responsiveness
+        const double alpha = 0.4;
         state.smoothed_x = alpha * target_x + (1.0 - alpha) * state.smoothed_x;
         state.smoothed_y = alpha * target_y + (1.0 - alpha) * state.smoothed_y;
 
@@ -229,7 +236,7 @@ public:
         double x_error = -(state.smoothed_x - 0.5);
         double y_error = -(state.smoothed_y - 0.5);  // Inverted for upside-down camera
 
-        const double deadband = 0.1;  // Large deadband
+        const double deadband = 0.05;  // Tighter deadband for better centering
         
         bool is_centered = (std::abs(x_error) < deadband && std::abs(y_error) < deadband);
         
@@ -250,14 +257,15 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
 
-        // Conservative gains
-        double pan_gain = std::abs(x_error) > 0.2 ? 10.0 :
-                         (std::abs(x_error) > 0.1 ? 5.0 : 2.5);
-        double tilt_gain = std::abs(y_error) > 0.2 ? 10.0 : 
-                          (std::abs(y_error) > 0.1 ? 5.0 : 2.5);
+        // Much more conservative gains - prevent overshooting
+        double pan_gain = std::abs(x_error) > 0.15 ? 8.0 :
+                         (std::abs(x_error) > 0.08 ? 4.0 : 2.0);
+        double tilt_gain = std::abs(y_error) > 0.15 ? 8.0 : 
+                          (std::abs(y_error) > 0.08 ? 4.0 : 2.0);
         
-        double pan_adj = std::clamp(x_error * pan_gain, -3.0, 3.0);
-        double tilt_adj = std::clamp(y_error * tilt_gain, -3.0, 3.0);
+        // Even tighter clamp to prevent big jumps
+        double pan_adj = std::clamp(x_error * pan_gain, -2.0, 2.0);
+        double tilt_adj = std::clamp(y_error * tilt_gain, -2.0, 2.0);
 
         double current_pan = state.turret->getPanAngle();
         double current_tilt = state.turret->getTiltAngle();
@@ -272,9 +280,9 @@ public:
         state.turret->setPanAngle(new_pan);
         state.turret->setTiltAngle(new_tilt);
 
-        // Wait for servos to settle
+        // Wait proportional to movement - smaller moves = faster
         double total_movement = std::abs(pan_adj) + std::abs(tilt_adj);
-        int wait_ms = std::min(250, static_cast<int>(80 + total_movement * 20));
+        int wait_ms = std::min(150, static_cast<int>(50 + total_movement * 15));
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
         
         std::cout << "🎯 Track: target(" << target_x << ", " << target_y << ") "
