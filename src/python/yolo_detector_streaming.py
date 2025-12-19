@@ -185,7 +185,7 @@ def index():
             </style>
         </head>
         <body>
-            <h1>🎯 YOLO Tracker Debug Stream</h1>
+            <h1>🎯 YOLO Tracker Stream</h1>
             <img src="/video_feed" />
             <div class="info">
                 <p>🟢 Green box = Valid person detection | 🔴 Red box = Rejected detection</p>

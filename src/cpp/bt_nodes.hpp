@@ -282,7 +282,7 @@ public:
 
         // Wait proportional to movement - smaller moves = faster
         double total_movement = std::abs(pan_adj) + std::abs(tilt_adj);
-        int wait_ms = std::min(150, static_cast<int>(50 + total_movement * 15));
+        int wait_ms = std::min(100, static_cast<int>(40 + total_movement * 10));
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
         
         std::cout << "🎯 Track: target(" << target_x << ", " << target_y << ") "
