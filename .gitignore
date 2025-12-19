@@ -1,35 +1,44 @@
-# Build artifacts
-build/
-bin/
-*.o
-*.so
-*.a
-
-# Executables
-orthanc
-
 # Python
 venv/
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.pytest_cache/
 
-# Test outputs
-camera_test_output/
-yolo_test_output/
-fov_calibration_output/
+# Build artifacts
+build/
+bin/
+external/
+*.o
+*.so
+*.a
+
+# Executables
+bt_tracker
+orthanc_menu
+orthanc
+orthanc_tracker
+
+# Runtime files (generated in build/)
+build/detections.json
+detections.json
+*.log
+
+# YOLO models (download separately, stored in build/)
+build/*.pt
+*.pt
 
 # IDE
 .vscode/
 .idea/
 *.swp
+*.swo
 *~
 
-external/
-build/
+# macOS
+.DS_Store
 
-# DS
-
-# Config (if contains sensitive data)
-# config/turret_config.json
+# Backup files
+*.bak
+*.backup
