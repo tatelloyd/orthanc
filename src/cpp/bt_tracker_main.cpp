@@ -56,36 +56,8 @@ int main() {
     std::cout << "🔄 Starting tick loop (Ctrl+C to stop)...\n\n";
     int tick_count = 0;
     
-
-    /*// In bt_tracker_main.cpp, before the tick loop:
-    std::cout << "\n🧪 DIRECTION TEST:\n";
-    std::cout << "Current pan: " << turret.getPanAngle() << "°\n";
-    std::cout << "Moving to 45°...\n";
-    turret.setPanAngle(45);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    std::cout << "Moving to 135°...\n";
-    turret.setPanAngle(135);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    std::cout << "Does 45° point LEFT and 135° point RIGHT? (y/n): ";
-    std::string response;
-    std::cin >> response;
-    if (response != "y") {
-        std::cout << "❌ Pan direction is inverted!\n";
-        return 1;
-    }
-    std::cout << "✅ Pan direction confirmed\n\n";*/
-
-    /*std::cout << "\n🧪 TILT TEST (camera is upside down):\n";
-    turret.setTiltAngle(45);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    std::cout << "Is camera pointing DOWN? (y/n): ";
-    std::cin >> response;
-    if (response != "y") {
-        std::cout << "❌ Tilt direction needs inversion!\n";
-        return 1;
-    }*/
-
-
+    // Loop simply calls the tick function at the set rate for the nodes
+    // and has a 0.1 second delay for the servos to adjuust.
     while (running) {
         BT::NodeStatus status = tree.tickOnce();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));

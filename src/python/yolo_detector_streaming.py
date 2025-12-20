@@ -15,7 +15,7 @@ from flask import Flask, Response
 from ultralytics import YOLO
 
 # Configuration
-DEBUG_STREAM = True  # Set to False to disable streaming (save resources)
+STREAM = True  # Set to False to disable streaming (save resources)
 STREAM_PORT = 5000
 
 app = Flask(__name__)
@@ -30,13 +30,18 @@ class StableTracker:
         """Add a detection and return stable position if confident"""
         self.detections.append(detection)
         
+        # Return none if there aren't consistent detections.
         if len(self.detections) < 2:
             return None
             
+        # Return average coordinates of detections.
         recent = list(self.detections)
         avg_x = sum(d['x'] for d in recent) / len(recent)
         avg_y = sum(d['y'] for d in recent) / len(recent)
         
+
+        # Return no detections if the max distance of the distances
+        # is greater than the allowed threshold.
         max_dist = max(
             ((d['x'] - avg_x)**2 + (d['y'] - avg_y)**2)**0.5 
             for d in recent
@@ -72,7 +77,7 @@ frame_lock = threading.Lock()
 detection_info = {}
 
 def annotate_frame(frame, results, model, width, height, person_candidates, stable_person, tracker_state):
-    """Draw all debug information on frame"""
+    """Draw all camera information on frame"""
     annotated = frame.copy()
     
     # Draw all YOLO detections
@@ -176,7 +181,7 @@ def index():
     return """
     <html>
         <head>
-            <title>YOLO Tracker Debug</title>
+            <title>YOLO Tracker </title>
             <style>
                 body { margin: 0; padding: 20px; background: #1a1a1a; text-align: center; }
                 h1 { color: #fff; font-family: Arial; }
@@ -225,6 +230,7 @@ def detection_loop():
         print("❌ Cannot open camera")
         return
     
+    # Basic camera setup.
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
     
@@ -237,8 +243,9 @@ def detection_loop():
     tracker = StableTracker(buffer_size=3, position_threshold=0.12)
     tracker_state = {'fps': 0}
     
+    # If idicated, stream what camera sees to specified IP address and port.
     print(f"🎯 Detection service running...")
-    if DEBUG_STREAM:
+    if STREAM:
         import socket
         hostname = socket.gethostname()
         local_ip = socket.gethostbyname(hostname)
@@ -275,6 +282,9 @@ def detection_loop():
             # Process detections
             person_candidates = []
             
+            # Dissect the reults for each box to:
+            # 1) Determine what it is.
+            # 2) Determine the confidence of the classification.
             for box in results[0].boxes:
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
@@ -324,7 +334,7 @@ def detection_loop():
                 fps_start = current_time
             
             # Annotate frame for streaming
-            if DEBUG_STREAM:
+            if STREAM:
                 annotated_frame = annotate_frame(frame, results, model, width, height, 
                                                 person_candidates, stable_person, tracker_state)
                 with frame_lock:
@@ -335,6 +345,7 @@ def detection_loop():
             elapsed = time.time() - start_time
             person_count = len(detections)
             
+            # Output if a person was found or not.
             if person_count > 0:
                 status = f"👤 {person_count} person {'(stable)' if stable_person else '(tracking)'}"
             else:
@@ -348,6 +359,7 @@ def detection_loop():
                 'detections': detections
             }
             
+            # Lock the file and then reset detections for the next cycle.
             try:
                 with open('detections.json', 'w') as f:
                     fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -366,7 +378,7 @@ def detection_loop():
     print(f"✅ Detection service completed! Processed {frame_count} frames")
 
 def main():
-    if DEBUG_STREAM:
+    if STREAM:
         # Start detection in background thread
         detection_thread = threading.Thread(target=detection_loop, daemon=True)
         detection_thread.start()

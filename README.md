@@ -98,7 +98,7 @@ Orthanc demonstrates core principles of autonomous systems engineering:
 |-----------|-------|-------|
 | **Raspberry Pi 4** | 4GB+ RAM | Main controller, runs vision + control |
 | **Pan/Tilt Mount** | [SparkFun ROB-14045](https://www.sparkfun.com/products/14045) | Includes 2x SG90 servos |
-| **USB Webcam** | 640x480 @ 30fps | Any UVC-compatible camera |
+| **USB Webcam** | 320x240 @ 15fps | Any UVC-compatible camera |
 | **Power Supply** | 5V 3A USB-C | Official Raspberry Pi PSU recommended |
 | **MicroSD Card** | 32GB+ Class 10 | For Raspberry Pi OS (Debian 12) |
 | **Jumper Wires** | Female-to-Female | GPIO connections |
@@ -142,8 +142,8 @@ cmake --build build
 
 **Terminal 1 - Vision Pipeline:**
 ```bash
-source venv/bin/activate
-python src/python/yolo_detector.py
+source venv/bin/activate && cd build
+python3 ../src/python/yolo_detector_streaming.py
 ```
 
 **Terminal 2 - Behavior Tree Controller:**
@@ -177,7 +177,8 @@ Fallback (executes first successful child)
 **Control Algorithm** (`ProportionalTrack`):
 ```cpp
 // Normalized error (camera space: 0.0 to 1.0)
-double x_error = -(detected_x - 0.5);  // Invert for servo convention
+// Camera is upsidedown so invert for servo convention.
+double x_error = -(detected_x - 0.5); 
 double y_error = -(detected_y - 0.5);
 
 // Adaptive gains (faster response for large errors)
@@ -191,7 +192,7 @@ turret->setPanAngle(new_pan);
 ```
 
 **Deadband & Smoothing**:
-- 2.5% deadband prevents micro-adjustments
+- 5% deadband prevents micro-adjustments
 - Exponential smoothing (α=0.4) on detection coordinates
 - Requires 5 consecutive centered frames before declaring lock
 
@@ -236,7 +237,7 @@ turret->setPanAngle(new_pan);
 
 ### Working Features ✅
 - Autonomous person tracking with behavior tree control
-- Real-time YOLOv8 detection at 10 Hz
+- Real-time YOLOv8 detection at 15 Hz
 - Smooth proportional servo control
 - Fallback scanning behavior
 - Timestamp-based staleness checking
@@ -257,36 +258,30 @@ turret->setPanAngle(new_pan);
 - Investigating predictive tracking (Kalman filter) to smooth motion during detection gaps
 
 ### Next Steps
-1. Complete control loop optimization (target: <10ms jitter)
-2. Implement state machine for tracking confidence levels
-3. Add performance metrics logging for debugging
-4. Transition to ROS2 topics for vision-control communication
-5. Deploy second turret and test coordination primitives
+1. Transition to ROS2 topics for vision-control communication
+2. Deploy second turret and test coordination primitives
 
 ---
 
 ## 🗺️ Development Roadmap
 
-### Phase 1: Single-Agent Autonomy ✅ (80% Complete)
+### Phase 1: Single-Turret Functionality ✅ (100% Complete)
 - [x] Behavior tree framework integration
 - [x] Real-time vision pipeline
 - [x] Proportional tracking control
 - [x] Scanning fallback behavior
-- [ ] Control loop performance optimization
-- [ ] Predictive motion (Kalman filter)
+- [x] Control loop performance optimization
 
 ### Phase 2: Multi-Agent Foundation 🔄 (Next)
 - [ ] ROS2 migration (nodes, topics, services)
 - [ ] Deploy second turret hardware
+- [ ] Deploy AI agents for each tower
 - [ ] Distributed state sharing
 - [ ] Cooperative search patterns
 - [ ] Target handoff protocols
 
 ### Phase 3: Advanced Autonomy 📋 (Future)
 - [ ] IMU-based stabilization
-- [ ] Occlusion handling
-- [ ] Dynamic task allocation
-- [ ] Coverage optimization algorithms
 - [ ] Laser designation integration
 
 ---
@@ -304,7 +299,7 @@ orthanc/
 │   │   └── trees/
 │   │       └── basic_track.xml     # Behavior tree definition
 │   └── python/
-│       └── yolo_detector.py        # Vision detection service
+│       └── yolo_detector_streaming.py        # Vision detection service
 ├── tests/
 │   ├── cpp/
 │   │   └── menu.cpp                # Interactive hardware testing
@@ -323,7 +318,7 @@ Key tunable parameters in source files (config file migration planned):
 
 **Tracking Control** (`bt_nodes.hpp`):
 ```cpp
-const double deadband = 0.025;           // Center tolerance (2.5%)
+const double deadband = 0.05;           // Center tolerance (5%)
 const double alpha = 0.4;                // Smoothing factor
 double pan_gain = large_error ? 20.0 : 10.0;  // Adaptive gains
 ```
@@ -388,4 +383,4 @@ Robotics & Embedded Systems Engineer
 ---
 
 **Status**: Active Development 🚀 | Portfolio Project  
-**Last Updated**: December 2024
+**Last Updated**: December 2025

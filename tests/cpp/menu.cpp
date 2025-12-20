@@ -123,6 +123,7 @@ void testYOLO() {
     }
 }
 
+//Tempate for reducing code for setters and getters.
 template<typename SetAngleFunc, typename GetAngleFunc>
 void setAngle(const std::string& servoName, Turret& turret, SetAngleFunc setAngle, GetAngleFunc getAngle) {
     std::cout << "\n📐 Enter " << servoName <<" angle (0-180 degrees): ";

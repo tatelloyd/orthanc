@@ -12,6 +12,7 @@
 
 using json = nlohmann::json;
 
+// Struct helps determine which BT node robot should operate in.
 struct TrackerState {
     std::string detection_file = "detections.json";
     std::vector<json> current_detections;
@@ -20,6 +21,7 @@ struct TrackerState {
     double smoothed_x = 0.5;
     double smoothed_y = 0.5;
 
+    // Variables for determining if robot should continue tracking or stay locked
     int frames_since_detection = 0;
     std::chrono::steady_clock::time_point last_detection_time;
     const double loss_timeout_seconds = 2.0;
@@ -27,6 +29,7 @@ struct TrackerState {
     int consecutive_centered_frames = 0;
     const int frames_needed_to_lock = 5;
     
+    // Variables for if robot lost person and needs to track them.
     bool in_recovery_mode = false;
     double last_known_x = 0.5;
     double last_known_y = 0.5;
@@ -44,6 +47,7 @@ struct TrackerState {
     }
 };
 
+// Node for when person is currently in robot's frame.
 class HasPersonDetection : public BT::ConditionNode {
 public:
     HasPersonDetection(const std::string& name) 
@@ -56,6 +60,8 @@ public:
 
         std::cout << "🔍 Reading: " << state.detection_file << std::endl;
         
+
+        // Housekeeping for opening file and locking it to prevent read/write race conditions
         int fd = open(state.detection_file.c_str(), O_RDONLY);
         if (fd < 0) {
             std::cout << "⚠️  Cannot open " << state.detection_file << std::endl;
@@ -158,7 +164,7 @@ public:
                     }
                 }
             }
-            
+        // Throw error if there was written in incorrect format. 
         } catch (const std::exception& e) {
             flock(fd, LOCK_UN);
             close(fd);
@@ -167,6 +173,7 @@ public:
             return BT::NodeStatus::FAILURE;
         }
         
+        // Return updated position of person.
         if (state.has_person) {
             double x = state.target_person.value("x", 0.0);
             double y = state.target_person.value("y", 0.0);
@@ -187,6 +194,7 @@ public:
             return BT::NodeStatus::SUCCESS;
         }
         
+        // Update if the person was lost. Default to node failure (i.e. we force the program to find a person to return SUCCESS).
         std::cout << "❌ No valid person detected (frames lost: " << state.frames_since_detection << ")" << std::endl;
         state.frames_since_detection++;
         
@@ -201,6 +209,8 @@ public:
     }
 };
 
+// Node for when robot has seen a person but needs to move to keep them
+// in the camera frame.
 class ProportionalTrackAction : public BT::SyncActionNode {
 public:
     ProportionalTrackAction(const std::string& name)
@@ -214,6 +224,7 @@ public:
             return BT::NodeStatus::FAILURE;
         }
         
+        // Determine whether to find lost person or start sweeping.
         double target_x, target_y;
         if (state.in_recovery_mode) {
             target_x = state.last_known_x;
@@ -232,14 +243,16 @@ public:
         state.smoothed_x = alpha * target_x + (1.0 - alpha) * state.smoothed_x;
         state.smoothed_y = alpha * target_y + (1.0 - alpha) * state.smoothed_y;
 
-        // FIXED: Inverted x-axis (person right = pan left)
+        // Inverted for upside-down camera
         double x_error = -(state.smoothed_x - 0.5);
-        double y_error = -(state.smoothed_y - 0.5);  // Inverted for upside-down camera
+        double y_error = -(state.smoothed_y - 0.5);  
 
-        const double deadband = 0.05;  // Tighter deadband for better centering
+        // Tighter deadband for better centering
+        const double deadband = 0.05;  
         
         bool is_centered = (std::abs(x_error) < deadband && std::abs(y_error) < deadband);
         
+        // Return success if centered for frame threshold limit or if error is within acceptable bounds.
         if (is_centered && !state.in_recovery_mode) {
             state.consecutive_centered_frames++;
             if (state.consecutive_centered_frames >= state.frames_needed_to_lock) {
@@ -270,6 +283,7 @@ public:
         double current_pan = state.turret->getPanAngle();
         double current_tilt = state.turret->getTiltAngle();
 
+        // Update and apply pan and tilt adjustments for robot to lock on person.
         double new_pan = std::clamp(current_pan + pan_adj, 10.0, 170.0);
         double new_tilt = std::clamp(current_tilt + tilt_adj, 10.0, 170.0);
 
@@ -285,6 +299,7 @@ public:
         int wait_ms = std::min(100, static_cast<int>(40 + total_movement * 10));
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
         
+        // Output tracking information for user.
         std::cout << "🎯 Track: target(" << target_x << ", " << target_y << ") "
                   << "err(" << x_error << ", " << y_error << ") "
                   << "→ pan " << current_pan << "→" << new_pan << "°\n";
@@ -293,6 +308,9 @@ public:
     }    
 };
 
+// Node for when robot sees no person and is sweeping to find one.
+// This node simply returns success if it sweeps correctly and returns false
+// if it can't access the state turret struct.
 class SimpleScanAction : public BT::SyncActionNode {
 private:
     std::chrono::steady_clock::time_point last_move_time;
